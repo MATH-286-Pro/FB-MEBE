@@ -4,7 +4,4 @@
 # LICENSE file in the root directory of this source tree.
 
 # register agents for hydra
-from .ddpg import DDPGAgent as DDPGAgent
-from .ddpg import DDPGAgentConfig as DDPGAgentConfig
 from .fb_ddpg import FBDDPGAgent as FBDDPGAgent
-from .ddpg import MetaDict as MetaDict

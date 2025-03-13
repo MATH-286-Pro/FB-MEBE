@@ -126,8 +126,8 @@ class MetersGroup:
         print(' | '.join(pieces))
 
     @staticmethod
-    def _dump_to_wandb(data: Metrics) -> None:
-        wandb.log(data)
+    def _dump_to_wandb(data: Metrics, step=None) -> None:
+        wandb.log(data, step)
 
     def dump(self, step: int, prefix: str) -> None:
         if len(self._meters) == 0:
@@ -136,14 +136,14 @@ class MetersGroup:
         data['frame'] = step
         if self.use_wandb:
             wandb_data = {prefix + '/' + key: val for key, val in data.items()}
-            self._dump_to_wandb(data=wandb_data)
+            self._dump_to_wandb(data=wandb_data, step=step)
         self._dump_to_csv(data)
         self._dump_to_console(data, prefix)
         self._meters.clear()
 
 
 class Logger:
-    def __init__(self, log_dir: Path, use_tb: bool, use_wandb: bool) -> None:
+    def __init__(self, log_dir: Path, use_wandb: bool) -> None:
         self._log_dir = log_dir
 
         self._train_mg = MetersGroup(log_dir / 'train.csv',
@@ -152,20 +152,13 @@ class Logger:
         self._eval_mg = MetersGroup(log_dir / 'eval.csv',
                                     formating=COMMON_EVAL_FORMAT,
                                     use_wandb=use_wandb)
-        self._sw: tp.Optional[SummaryWriter] = None
-        if use_tb:
-            self._sw = SummaryWriter(str(log_dir / 'tb'))
         self.use_wandb = use_wandb
 
-    def _try_sw_log(self, key, value, step) -> None:
-        if self._sw is not None:
-            self._sw.add_scalar(key, value, step)
 
     def log(self, key: str, value: tp.Union[float, torch.Tensor], step: int) -> None:
         assert key.startswith('train') or key.startswith('eval')
         if isinstance(value, torch.Tensor):
             value = value.item()
-        self._try_sw_log(key, value, step)
         mg = self._train_mg if key.startswith('train') else self._eval_mg
         mg.log(key, value)
 

@@ -12,12 +12,9 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 
 
 import dataclasses
-from collections import OrderedDict, deque
 import typing as tp
-from typing import Any
 
-from dm_env import Environment
-from dm_env import StepType, specs
+from dm_env import StepType
 import numpy as np
 
 S = tp.TypeVar("S", bound="TimeStep")
@@ -26,10 +23,11 @@ S = tp.TypeVar("S", bound="TimeStep")
 @dataclasses.dataclass
 class TimeStep:
     step_type: StepType
-    reward: float
-    discount: float
-    observation: np.ndarray
+    reward: tp.Any
+    discount: tp.Any
+    observation: tp.Any
     physics: np.ndarray = dataclasses.field(default=np.ndarray([]), init=False)
+    done: tp.Any
 
     def first(self) -> bool:
         return self.step_type == StepType.FIRST  # type: ignore
@@ -47,6 +45,22 @@ class TimeStep:
         for name, val in kwargs.items():
             setattr(self, name, val)
         return self
+
+
+@dataclasses.dataclass
+class GoalTimeStep(TimeStep):
+    goal: np.ndarray
+
+
+@dataclasses.dataclass
+class ExtendedGoalTimeStep(GoalTimeStep):
+    action: tp.Any
+
+
+@dataclasses.dataclass
+class ExtendedTimeStep(TimeStep):
+    action: tp.Any
+    next_observation: tp.Any
 
 
 class FBVecEnvWrapper(VecEnv):
@@ -144,17 +158,17 @@ class FBVecEnvWrapper(VecEnv):
     def action_space(self) -> gym.Space:
         """Returns the :attr:`Env` :attr:`action_space`."""
         return self.env.action_space
-    
+
     @property
     def observation_spec(self):
         """Returns the observation specification of the environment."""
         return self.env.single_observation_space['policy']
-    
+
     @property
     def action_spec(self):
         """Returns the action specification of the environment."""
         return self.env.single_action_space
-    
+
     @classmethod
     def class_name(cls) -> str:
         """Returns the class name of the wrapper."""
@@ -206,29 +220,41 @@ class FBVecEnvWrapper(VecEnv):
         obs_dict, _ = self.env.reset()
         time_step = TimeStep(
             step_type=StepType.FIRST,
-            reward=0.0,
-            discount=1.0,
+            reward=torch.zeros(obs_dict["policy"].shape[0], device=self.device),
+            discount=torch.ones(obs_dict["policy"].shape[0], device=self.device),
             observation=obs_dict["policy"],
+            done=torch.zeros(obs_dict["policy"].shape[0], device=self.device),
         )
+        self.obs_dict = obs_dict
         # return observations
         return time_step
 
-    def step(self, actions: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+    def step(self, actions: torch.Tensor) -> ExtendedTimeStep:
         # record step information
         actions = torch.tensor(actions, device=self.device)
-        obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
+        next_obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
         # compute dones for compatibility with RSL-RL
         dones = (terminated | truncated).to(dtype=torch.long)
         # move extra observations to the extras dict
-        obs = obs_dict["policy"]
-        extras["observations"] = obs_dict
+        next_obs = next_obs_dict["policy"]
+        extras["observations"] = next_obs_dict
         # move time out information to the extras dict
         # this is only needed for infinite horizon tasks
         if not self.unwrapped.cfg.is_finite_horizon:
             extras["time_outs"] = truncated
 
         # return the step information
-        return obs, rew, dones, extras
+        ts = ExtendedTimeStep(observation=self.obs_dict["policy"],
+                              next_observation=next_obs,
+                              step_type=torch.where(dones.bool(), StepType.LAST, StepType.MID),
+                              action=actions,
+                              reward=rew,
+                              discount=1.0,
+                              done=dones.bool()
+                              )
+        # Update current observation
+        self.obs_dict = next_obs_dict
+        return ts
 
     def close(self):  # noqa: D102
         return self.env.close()

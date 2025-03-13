@@ -22,7 +22,7 @@ class UnsupportedPlatform(unittest.SkipTest, RuntimeError):
 
 try:
     from dm_control import suite  # , manipulation
-    from dm_control.suite.wrappers import action_scale, pixels
+    from dm_control.suite.wrappers import action_scale
     from url_benchmark import custom_dmc_tasks as cdmc
 except ImportError as e:
     raise UnsupportedPlatform(f"Import error (Note: DMC does not run on Mac):\n{e}") from e
@@ -120,53 +120,6 @@ class EnvWrapper:
         return getattr(self._env, name)
 
 
-class FlattenJacoObservationWrapper(EnvWrapper):
-    def __init__(self, env: Env) -> None:
-        super().__init__(env)
-        self._obs_spec = OrderedDict()
-        wrapped_obs_spec = env.observation_spec().copy()
-        if 'front_close' in wrapped_obs_spec:
-            spec = wrapped_obs_spec['front_close']
-            # drop batch dim
-            self._obs_spec['pixels'] = specs.BoundedArray(shape=spec.shape[1:],
-                                                          dtype=spec.dtype,
-                                                          minimum=spec.minimum,
-                                                          maximum=spec.maximum,
-                                                          name='pixels')
-            wrapped_obs_spec.pop('front_close')
-
-        for spec in wrapped_obs_spec.values():
-            assert spec.dtype == np.float64
-            assert type(spec) == specs.Array
-        dim = np.sum(
-            np.fromiter((int(np.prod(spec.shape))  # type: ignore
-                         for spec in wrapped_obs_spec.values()), np.int32))
-
-        self._obs_spec['observations'] = specs.Array(shape=(dim,),
-                                                     dtype=np.float32,
-                                                     name='observations')
-
-    def observation_spec(self) -> tp.Any:
-        return self._obs_spec
-
-    def _augment_time_step(self, time_step: TimeStep, action: tp.Optional[np.ndarray] = None) -> TimeStep:
-        super()._augment_time_step(time_step=time_step, action=action)
-        obs = OrderedDict()
-
-        # TODO: this is badly typed since observation is a dict in this case
-        if 'front_close' in time_step.observation:
-            pixels = time_step.observation['front_close']
-            time_step.observation.pop('front_close')  # type: ignore
-            pixels = np.squeeze(pixels)
-            obs['pixels'] = pixels
-
-        features = []
-        for feature in time_step.observation.values():  # type: ignore
-            features.append(feature.ravel())
-        obs['observations'] = np.concatenate(features, axis=0)
-        return time_step._replace(observation=obs)
-
-
 class ActionRepeatWrapper(EnvWrapper):
     def __init__(self, env: tp.Any, num_repeats: int) -> None:
         super().__init__(env)
@@ -183,54 +136,6 @@ class ActionRepeatWrapper(EnvWrapper):
                 break
 
         return time_step._replace(reward=reward, discount=discount)
-
-
-class FrameStackWrapper(EnvWrapper):
-    def __init__(self, env: Env, num_frames: int, pixels_key: str = 'pixels') -> None:
-        super().__init__(env)
-        self._num_frames = num_frames
-        self._frames: tp.Deque[np.ndarray] = deque([], maxlen=num_frames)
-        self._pixels_key = pixels_key
-
-        wrapped_obs_spec = env.observation_spec()
-        assert pixels_key in wrapped_obs_spec
-
-        pixels_shape = wrapped_obs_spec[pixels_key].shape
-        # remove batch dim
-        if len(pixels_shape) == 4:
-            pixels_shape = pixels_shape[1:]
-        self._obs_spec = specs.BoundedArray(shape=np.concatenate(
-            [[pixels_shape[2] * num_frames], pixels_shape[:2]], axis=0),
-            dtype=np.uint8,
-            minimum=0,
-            maximum=255,
-            name='observation')
-
-    def _augment_time_step(self, time_step: TimeStep, action: tp.Optional[np.ndarray] = None) -> TimeStep:
-        super()._augment_time_step(time_step=time_step, action=action)
-        assert len(self._frames) == self._num_frames
-        obs = np.concatenate(list(self._frames), axis=0)
-        return time_step._replace(observation=obs)
-
-    def _extract_pixels(self, time_step: TimeStep) -> np.ndarray:
-        pixels_ = time_step.observation[self._pixels_key]
-        # remove batch dim
-        if len(pixels_.shape) == 4:
-            pixels_ = pixels_[0]
-        return pixels_.transpose(2, 0, 1).copy()
-
-    def reset(self) -> TimeStep:
-        time_step = self._env.reset()
-        pixels_ = self._extract_pixels(time_step)
-        for _ in range(self._num_frames):
-            self._frames.append(pixels_)
-        return self._augment_time_step(time_step)
-
-    def step(self, action: np.ndarray) -> TimeStep:
-        time_step = self._env.step(action)
-        pixels_ = self._extract_pixels(time_step)
-        self._frames.append(pixels_)
-        return self._augment_time_step(time_step)
 
 
 class GoalWrapper(EnvWrapper):
@@ -332,24 +237,6 @@ class ExtendedTimeStepWrapper(EnvWrapper):
         return super()._augment_time_step(time_step=ts, action=action)
 
 
-def _make_jaco(obs_type, domain, task, frame_stack, action_repeat, seed,
-               goal_space: tp.Optional[str] = None, append_goal_to_observation: bool = False
-               ) -> FlattenJacoObservationWrapper:
-    env = cdmc.make_jaco(task, obs_type, seed)
-    if goal_space is not None:
-        # inline because circular import
-        from url_benchmark import goals as _goals  # pytlint: disable=import-outside-toplevel
-        funcs = _goals.goal_spaces.funcs[domain]
-        if goal_space not in funcs:
-            raise ValueError(f"No goal space {goal_space} for {domain}, avail: {list(funcs)}")
-        goal_func = funcs[goal_space]
-        env = GoalWrapper(env, goal_func, append_goal_to_observation=append_goal_to_observation)
-    env = ActionDTypeWrapper(env, np.float32)
-    env = ActionRepeatWrapper(env, action_repeat)
-    env = FlattenJacoObservationWrapper(env)
-    return env
-
-
 def _make_dmc(obs_type, domain, task, frame_stack, action_repeat, seed,
               goal_space: tp.Optional[str] = None, append_goal_to_observation: bool = False):
     visualize_reward = False
@@ -376,13 +263,6 @@ def _make_dmc(obs_type, domain, task, frame_stack, action_repeat, seed,
         env = GoalWrapper(env, goal_func, append_goal_to_observation=append_goal_to_observation)
     env = ActionDTypeWrapper(env, np.float32)
     env = ActionRepeatWrapper(env, action_repeat)
-    if obs_type == 'pixels':
-        # zoom in camera for quadruped
-        camera_id = dict(quadruped=2).get(domain, 0)
-        render_kwargs = dict(height=84, width=84, camera_id=camera_id)
-        env = pixels.Wrapper(env,
-                             pixels_only=True,
-                             render_kwargs=render_kwargs)
     return env
 
 
@@ -401,18 +281,12 @@ def make(
         _, _, _, task = name.split('_', 3)
     else:
         domain, task = name.split('_', 1)
-    if sys.platform == "darwin":
-        raise UnsupportedPlatform("Mac platform is not supported")
 
-    make_fn = _make_jaco if domain == 'jaco' else _make_dmc
     # TODO fix this when it fails (signatures differ)
-    env = make_fn(obs_type, domain, task, frame_stack, action_repeat, seed,
+    env = _make_dmc(obs_type, domain, task, frame_stack, action_repeat, seed,
                   goal_space=goal_space, append_goal_to_observation=append_goal_to_observation)  # type: ignore
 
-    if obs_type == 'pixels':
-        env = FrameStackWrapper(env, frame_stack)
-    else:
-        env = ObservationDTypeWrapper(env, np.float32)
+    env = ObservationDTypeWrapper(env, np.float32)
 
     env = action_scale.Wrapper(env, minimum=-1.0, maximum=+1.0)
     if goal_space is not None:
