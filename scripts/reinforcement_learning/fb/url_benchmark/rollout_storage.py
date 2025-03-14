@@ -26,26 +26,27 @@ class EpisodeBatch(tp.Generic[T]):
 
 
 class RolloutStorage:
-    class Transition:
-        def __init__(self):
-            self.observations = None
-            self.critic_observations = None
-            self.actions = None
-            self.rewards = None
-            self.dones = None
-            self.values = None
-            self.actions_log_prob = None
-            self.action_mean = None
-            self.action_sigma = None
+    # class Transition:
+    #     def __init__(self):
+    #         self.observations = None
+    #         self.critic_observations = None
+    #         self.actions = None
+    #         self.rewards = None
+    #         self.dones = None
+    #         self.values = None
+    #         self.actions_log_prob = None
+    #         self.action_mean = None
+    #         self.action_sigma = None
 
-        def clear(self):
-            self.__init__()
+    #     def clear(self):
+    #         self.__init__()
 
     def __init__(self,
                  num_envs,
                  num_transitions_per_env,
                  discount,
                  num_obs,
+                 num_goal,
                  num_actions,
                  num_z,
                  device='cpu') -> None:
@@ -60,7 +61,8 @@ class RolloutStorage:
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, num_obs, device=self.device)
         self.next_observations = torch.zeros(num_transitions_per_env, num_envs, num_obs, device=self.device)
-        self.goals = torch.zeros(num_transitions_per_env, num_envs, num_obs, device=self.device)
+        self.goals = torch.zeros(num_transitions_per_env, num_envs, num_goal, device=self.device)
+        self.next_goals = torch.zeros(num_transitions_per_env, num_envs, num_goal, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, num_actions, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -76,7 +78,8 @@ class RolloutStorage:
         self.observations[self.step].copy_(transition.observation)
         self.next_observations[self.step].copy_(transition.next_observation)
 
-        # self.goals[self.step].copy_(transition.goal)
+        self.goals[self.step].copy_(transition.goal)
+        self.next_goals[self.step].copy_(transition.next_goal)
         self.actions[self.step].copy_(transition.action)
         self.dones[self.step].copy_(transition.done.view(-1, 1))
         self.rewards[self.step].copy_(transition.reward.view(-1, 1))
@@ -94,6 +97,8 @@ class RolloutStorage:
 
         observations = self.observations.flatten(0, 1)
         next_observations = self.next_observations.flatten(0, 1)
+        goals = self.goals.flatten(0, 1)
+        next_goals = self.next_goals.flatten(0, 1)
         dones = self.dones.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
         rewards = self.rewards.flatten(0, 1)
@@ -115,14 +120,15 @@ class RolloutStorage:
                 obs_batch = observations[batch_idx]
                 next_obs_batch = next_observations[batch_idx]
                 
+                goal_batch = goals[batch_idx]
+                next_goal_batch = next_goals[batch_idx]
+                
                 action_batch = actions[batch_idx]
                 rew_batch = rewards[batch_idx]
                 discount_batch = self.discount * torch.ones_like(rew_batch)
-                goal = None
-                next_goal = None
                 future_obs = None
                 future_goal = None
 
-                yield EpisodeBatch(obs=obs_batch, goal=goal, action=action_batch, reward=rew_batch, discount=discount_batch,
-                                   next_obs=next_obs_batch, next_goal=next_goal,
+                yield EpisodeBatch(obs=obs_batch, goal=goal_batch, action=action_batch, reward=rew_batch, discount=discount_batch,
+                                   next_obs=next_obs_batch, next_goal=next_goal_batch,
                                    future_obs=future_obs, future_goal=future_goal)

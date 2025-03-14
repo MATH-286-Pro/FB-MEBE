@@ -37,6 +37,7 @@ class FBDDPGAgentConfig:
     # reward_free: ${reward_free}
     obs_type: str = omegaconf.MISSING  # to be specified later
     obs_shape: tp.Tuple[int, ...] = omegaconf.MISSING  # to be specified later
+    goal_shape: tp.Tuple[int, ...] = omegaconf.MISSING  # to be specified later
     action_shape: tp.Tuple[int, ...] = omegaconf.MISSING  # to be specified later
     device: str = omegaconf.II("device")  # ${device}
     lr: float = 1e-4
@@ -94,9 +95,9 @@ class FBDDPGAgent:
         if cfg.feature_dim < self.obs_dim:
             logger.warning(f"feature_dim {cfg.feature_dim} should not be smaller that obs_dim {self.obs_dim}")
 
-        goal_dim = self.obs_dim
-        if cfg.goal_space is not None:
-            goal_dim = _goals.get_goal_space_dim(cfg.goal_space)
+        goal_dim = cfg.goal_shape[0]
+        # if cfg.goal_space is not None:
+        #     goal_dim = _goals.get_goal_space_dim(cfg.goal_space)
         if cfg.z_dim < goal_dim:
             logger.warning(f"z_dim {cfg.z_dim} should not be smaller that goal_dim {goal_dim}")
         # create the network
@@ -475,20 +476,20 @@ class FBDDPGAgent:
             # batch = batch.to(self.cfg.device)
 
             obs = batch.obs
-            goal = batch.obs
+            goal = batch.goal
             action = batch.action
             discount = batch.discount
-            next_obs = next_goal = batch.next_obs
+            next_obs = batch.next_obs
             batch_size = obs.size(0)
             if self.cfg.goal_space is not None:
                 assert batch.next_goal is not None
-                next_goal = batch.next_goal
+            next_goal = batch.next_goal
 
             z = self.sample_z(batch_size, device=self.cfg.device)
             if not z.shape[-1] == self.cfg.z_dim:
                 raise RuntimeError("There's something wrong with the logic here")
-            backward_input = batch.obs
-            future_goal = batch.future_obs
+            backward_input = batch.goal
+            future_goal = batch.future_goal
             if self.cfg.goal_space is not None:
                 assert batch.goal is not None
                 backward_input = batch.goal

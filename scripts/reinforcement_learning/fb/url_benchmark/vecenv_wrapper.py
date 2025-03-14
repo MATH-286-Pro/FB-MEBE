@@ -61,6 +61,8 @@ class ExtendedGoalTimeStep(GoalTimeStep):
 class ExtendedTimeStep(TimeStep):
     action: tp.Any
     next_observation: tp.Any
+    goal: tp.Any
+    next_goal: tp.Any
 
 
 class FBVecEnvWrapper(VecEnv):
@@ -165,6 +167,11 @@ class FBVecEnvWrapper(VecEnv):
         return self.env.single_observation_space['policy']
 
     @property
+    def goal_spec(self):
+        """Returns the goal specification of the environment."""
+        return self.env.single_observation_space['goal']
+
+    @property
     def action_spec(self):
         """Returns the action specification of the environment."""
         return self.env.single_action_space
@@ -237,6 +244,7 @@ class FBVecEnvWrapper(VecEnv):
         dones = (terminated | truncated).to(dtype=torch.long)
         # move extra observations to the extras dict
         next_obs = next_obs_dict["policy"]
+        next_goal = next_obs_dict["goal"]
         extras["observations"] = next_obs_dict
         # move time out information to the extras dict
         # this is only needed for infinite horizon tasks
@@ -246,6 +254,8 @@ class FBVecEnvWrapper(VecEnv):
         # return the step information
         ts = ExtendedTimeStep(observation=self.obs_dict["policy"],
                               next_observation=next_obs,
+                              goal=self.obs_dict["goal"],
+                              next_goal=next_goal,
                               step_type=torch.where(dones.bool(), StepType.LAST, StepType.MID),
                               action=actions,
                               reward=rew,

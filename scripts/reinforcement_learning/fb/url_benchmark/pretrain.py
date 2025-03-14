@@ -169,10 +169,11 @@ ConfigStore.instance().store(name="workspace_config", node=Config)
 
 
 def make_agent(
-    obs_type: str, obs_spec, action_spec, num_expl_steps: int, cfg: omgcf.DictConfig
+    obs_type: str, obs_spec, goal_spec, action_spec, num_expl_steps: int, cfg: omgcf.DictConfig
 ) -> tp.Union[agents.FBDDPGAgent]:
     cfg.obs_type = obs_type
     cfg.obs_shape = obs_spec.shape
+    cfg.goal_shape = goal_spec.shape
     cfg.action_shape = action_spec.shape
     cfg.num_expl_steps = num_expl_steps
     return hydra.utils.instantiate(cfg)
@@ -242,6 +243,7 @@ class BaseWorkspace(tp.Generic[C]):
         # create agent
         self.agent = make_agent(cfg.obs_type,
                                 self.train_env.observation_spec,
+                                self.train_env.goal_spec,
                                 self.train_env.action_spec,
                                 cfg.num_seed_frames // cfg.action_repeat,
                                 cfg.agent)
@@ -259,6 +261,7 @@ class BaseWorkspace(tp.Generic[C]):
         self.num_transitions_per_env = 32
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
                                             num_obs=self.train_env.observation_spec.shape[0],
+                                            num_goal=self.train_env.goal_spec.shape[0],
                                             num_actions=self.train_env.action_spec.shape[0],
                                             num_z=cfg.agent.z_dim,
                                             device=self.device)
