@@ -20,7 +20,6 @@ from url_benchmark import utils
 # from url_benchmark import replay_buffer as rb
 from url_benchmark.rollout_storage import RolloutStorage
 from url_benchmark.vecenv_wrapper import ExtendedTimeStep, TimeStep
-from url_benchmark import goals as _goals
 from .fb_modules import Actor, DiagGaussianActor, ForwardMap, BackwardMap, OnlineCov, EnsembleMLP, HighLevelActor, Critic, RNDCuriosity
 from url_benchmark.logger import AverageMeter
 
@@ -58,7 +57,6 @@ class FBDDPGAgentConfig:
     nstep: int = 1
     batch_size: int = 1024  # 512
     init_fb: bool = True
-    goal_space: tp.Optional[str] = omegaconf.II("goal_space")
     ortho_coef: float = 1.0  # 0.01-10
     log_std_bounds: tp.Tuple[float, float] = (-5, 2)  # param for DiagGaussianActor
     temp: float = 1  # temperature for DiagGaussianActor
@@ -96,8 +94,7 @@ class FBDDPGAgent:
             logger.warning(f"feature_dim {cfg.feature_dim} should not be smaller that obs_dim {self.obs_dim}")
 
         goal_dim = cfg.goal_shape[0]
-        # if cfg.goal_space is not None:
-        #     goal_dim = _goals.get_goal_space_dim(cfg.goal_space)
+
         if cfg.z_dim < goal_dim:
             logger.warning(f"z_dim {cfg.z_dim} should not be smaller that goal_dim {goal_dim}")
         # create the network
@@ -175,7 +172,7 @@ class FBDDPGAgent:
         batch_size = 0
         generator = replay_loader.mini_batch_generator(num_mini_batches=4, num_epochs=1)  # TODO update numbers?
         for batch in generator:
-            obs_list.append(batch.next_goal if self.cfg.goal_space is not None else batch.next_obs)
+            obs_list.append(batch.next_goal)
             reward_list.append(batch.reward)
             batch_size += batch.next_obs.size(0)
             if batch_size >= self.cfg.num_inference_steps:
@@ -221,29 +218,32 @@ class FBDDPGAgent:
             return self.init_curious_meta(obs,)
         else:
             z = self.sample_z(size=obs.shape[0])
-            z = z.squeeze().numpy()
+            z = z.squeeze().to(self.cfg.device)
             meta = OrderedDict()
             meta['z'] = z
-        meta['updated'] = True
+        meta['updated'] = torch.tensor([[True]] * obs.shape[0], device=self.cfg.device)
         return meta
 
     def init_curious_meta(self, obs: torch.Tensor) -> MetaDict:
         meta = OrderedDict()
+        num_obs, _ = obs.shape
         if self.cfg.sampling:
             with torch.no_grad():
-                num_zs = self.cfg.num_z_samples
+                num_zs = self.cfg.num_z_samples * obs.shape[0]
                 z = self.sample_z(size=num_zs, device=self.cfg.device)  # num_zs x z_dim
-                obs = torch.as_tensor(obs, device=self.cfg.device, dtype=torch.float32).expand(num_zs, -1)  # num_zs x obs_dim
+                obs = obs.repeat_interleave(self.cfg.num_z_samples, 0)  # each obs repeated num_z_samples times x obs_dim
                 acts = self.actor(obs, z, std=1.).mean  # num_zs x act_dim take the mean, although querying with std 0 anyways
                 F1, F2 = self.forward_net((obs, z, acts))  # ensemble_size x num_zs x z_dim
                 Q1, Q2 = [torch.einsum('esd, ...sd -> es', Fi, z) for Fi in [F1, F2]]  # ensemble_size x num_zs
             epistemic_std1, epistemic_std2 = Q1.std(dim=0), Q2.std(dim=0)  # num_zs # TODO only using epistemic_std1
-            idxs = torch.argmax(epistemic_std1, dim=0)
-            uncertain_z = z[idxs].cpu().numpy()  # take the z with the highest epistemic uncertainty
-            meta['z'] = uncertain_z
+            epistemic_std1 = epistemic_std1.reshape(num_obs, self.cfg.num_z_samples)  # reshape
+            idxs = torch.argmax(epistemic_std1, dim=-1)
+            z = z.reshape(num_obs, self.cfg.num_z_samples, -1)
+            meta['z'] = z[torch.arange(z.shape[0]), idxs]  # take the z with the highest epistemic uncertainty
             meta['disagr'] = epistemic_std1.std().item()
-            meta['updated'] = True
+            meta['updated'] = torch.tensor([[True]] * num_obs, device=self.cfg.device)
         else:
+            raise not NotImplementedError
             with torch.no_grad():
                 obs = torch.as_tensor(obs, device=self.cfg.device)
                 z = self.high_expl_actor(obs, std=1.).sample()  # TODO check std
@@ -256,13 +256,16 @@ class FBDDPGAgent:
     def update_meta(
         self,
         meta: MetaDict,
-        global_step: int,
+        env_step: torch.tensor,
         obs: torch.Tensor,
     ) -> MetaDict:
-        if global_step % self.cfg.update_z_every_step == 0 and np.random.rand() < self.cfg.update_z_proba:
-            return self.init_meta(obs) if not self.cfg.uncertainty else self.init_curious_meta(obs)
+        # substitute old zs for the new ones if it's time to update
+        if len(env_step % self.cfg.update_z_every_step == 0) > 0 :
+            new_meta = self.init_meta(obs) if not self.cfg.uncertainty else self.init_curious_meta(obs)
+            meta['z'][env_step % self.cfg.update_z_every_step == 0] = new_meta['z'][env_step % self.cfg.update_z_every_step == 0]
+            meta['updated'][env_step % self.cfg.update_z_every_step == 0] = new_meta['updated'][env_step % self.cfg.update_z_every_step == 0]
+            meta['updated'][env_step % self.cfg.update_z_every_step != 0] = torch.tensor(False, device=self.cfg.device)
 
-        meta['updated'] = False
         return meta
 
     def act(self, obs, meta, step, eval_mode) -> tp.Any:
@@ -282,7 +285,7 @@ class FBDDPGAgent:
         return action.cpu().numpy()[0]
 
     def compute_z_correl(self, time_step: TimeStep, meta: MetaDict) -> float:
-        goal = time_step.goal if self.cfg.goal_space is not None else time_step.observation  # type: ignore
+        goal = time_step.goal  # type: ignore
         with torch.no_grad():
             zs = [torch.Tensor(x).unsqueeze(0).float().to(self.cfg.device) for x in [goal, meta["z"]]]
             zs[0] = self.backward_net(zs[0])
@@ -320,9 +323,6 @@ class FBDDPGAgent:
                 target_M1 = torch.einsum('esd, ...td -> est', target_F1, target_B)  # e x batch x batch torch.ones((self.n_ensemble, 1024, 1024), device = target_F1.device) #
                 target_M2 = torch.einsum('esd, ...td -> est', target_F2, target_B)  # e x batch x batch torch.ones((self.n_ensemble, 1024, 1024), device = target_F1.device) #
             target_M = torch.min(target_M1, target_M2)
-        # TODO Should I sample different batches for every different F ensemble?
-        # compute FB loss
-        # F1, F2 = torch.ones((self.n_ensemble, 1024, 50), device = 'cuda:0'), torch.ones((self.n_ensemble, 1024, 50), device = 'cuda:0') #self.forward_net((obs, z, action))  # batch x z_dim
         F1, F2 = self.forward_net((obs, z, action))  # batch x z_dim
         B = self.backward_net(goal)  # batch x z_dim
         if not self.cfg.uncertainty:
@@ -347,7 +347,6 @@ class FBDDPGAgent:
 
             # M.diagonal(dim1=-2, dim2=-1) returns diagonals over every ensemble so size is: E x batch
             # then we average over B and sum over E and over M1 and M2
-            # fb_diag: tp.Any = -sum(sum(M.diagonal(dim1=-2, dim2=-1).mean(-1) for M in [M1, M2]))
             fb_diag: tp.Any = -sum(M.diagonal(dim1=-2, dim2=-1).mean() for M in [M1, M2])
         fb_loss = fb_offdiag + fb_diag
 
@@ -389,17 +388,6 @@ class FBDDPGAgent:
         fb_loss.backward()
         self.fb_opt.step()
         return metrics
-
-    @torch.compile
-    def diag_fcts(self, M1, M2, target_M, discount, E_indices, off_diag):
-        fb_offdiag: tp.Any = 0.5 * sum(sum((M - discount * target_M)[E_indices, off_diag].pow(2).mean(-1) for M in [M1, M2]))
-        # fb_offdiag1: tp.Any = (M1 - scaled_T)[E_indices, off_diag].pow(2).mean(-1) # e x 1
-        # fb_offdiag2: tp.Any = (M2 - scaled_T)[E_indices, off_diag].pow(2).mean(-1)
-        # fb_offdiag = 0.5 * (fb_offdiag1 + fb_offdiag2).sum()
-        # M.diagonal(dim1=-2, dim2=-1) returns diagonals over every ensemble so size is: E x batch
-        # then we average over B and sum over E and over M1 and M2
-        fb_diag: tp.Any = -sum(sum(M.diagonal(dim1=-2, dim2=-1).mean(-1) for M in [M1, M2]))
-        return fb_diag, fb_offdiag
 
     def update_actor(self, obs: torch.Tensor, z: torch.Tensor, step: int) -> tp.Dict[str, float]:
         metrics: tp.Dict[str, float] = {}
@@ -470,7 +458,7 @@ class FBDDPGAgent:
         if step % self.cfg.update_every_steps != 0:
             return metrics
 
-        average_metrics = defaultdict(AverageMeter)
+        average_meter = defaultdict(AverageMeter)
         generator = replay_loader.mini_batch_generator(num_mini_batches=4, num_epochs=5)  # TODO update numbers?
         for batch in generator:
             # batch = batch.to(self.cfg.device)
@@ -481,8 +469,6 @@ class FBDDPGAgent:
             discount = batch.discount
             next_obs = batch.next_obs
             batch_size = obs.size(0)
-            if self.cfg.goal_space is not None:
-                assert batch.next_goal is not None
             next_goal = batch.next_goal
 
             z = self.sample_z(batch_size, device=self.cfg.device)
@@ -490,11 +476,6 @@ class FBDDPGAgent:
                 raise RuntimeError("There's something wrong with the logic here")
             backward_input = batch.goal
             future_goal = batch.future_goal
-            if self.cfg.goal_space is not None:
-                assert batch.goal is not None
-                backward_input = batch.goal
-                goal = batch.goal
-                future_goal = batch.future_goal
 
             perm = torch.randperm(batch_size)
             backward_input = backward_input[perm]
@@ -522,11 +503,9 @@ class FBDDPGAgent:
                 assert future_goal is not None
                 future_idxs = np.where(np.random.uniform(size=batch_size) < self.cfg.future_ratio)
                 z[future_idxs] = self.backward_net(future_goal[future_idxs]).detach()
-
             metrics.update(self.update_fb(obs=obs, action=action, discount=discount,
                                           next_obs=next_obs, next_goal=next_goal, z=z, step=step,
-                                          goal=goal))
-
+                                          goal=goal))  # type: ignore
             # update high expl actor
             if self.cfg.uncertainty and not self.cfg.sampling:
                 metrics.update(self.update_high_expl_actor(obs, step))
@@ -542,7 +521,9 @@ class FBDDPGAgent:
 
             # average metrics
             for k, v in metrics.items():
-                average_metrics[k].update(v)
-
+                average_meter[k].update(v)
         replay_loader.clear()
+
+        average_metrics = {k: v.value() for k, v in average_meter.items()}
+
         return average_metrics

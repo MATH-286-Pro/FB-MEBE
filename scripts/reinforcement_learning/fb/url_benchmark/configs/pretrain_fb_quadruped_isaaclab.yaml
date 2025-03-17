@@ -8,9 +8,9 @@ defaults:
 task: quadruped_walk
 custom_reward: quadruped_walk
 append_goal_to_observation: True
-uncertainty: False
+uncertainty: True
 eval_every_frames: 10000
-use_wandb: false
+use_wandb: true
 seed: 0
 experiment: test_quadruped
 discount: 0.98

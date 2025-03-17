@@ -64,7 +64,7 @@ class RolloutStorage:
         self.goals = torch.zeros(num_transitions_per_env, num_envs, num_goal, device=self.device)
         self.next_goals = torch.zeros(num_transitions_per_env, num_envs, num_goal, device=self.device)
         self.actions = torch.zeros(num_transitions_per_env, num_envs, num_actions, device=self.device)
-        self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
+        self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.rewards = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
         self.meta = torch.zeros(num_transitions_per_env, num_envs, num_z, device=self.device)
         self.num_transitions_per_env = num_transitions_per_env
@@ -83,7 +83,7 @@ class RolloutStorage:
         self.actions[self.step].copy_(transition.action)
         self.dones[self.step].copy_(transition.done.view(-1, 1))
         self.rewards[self.step].copy_(transition.reward.view(-1, 1))
-        self.meta[self.step].copy_(torch.tensor(meta['z']).to(self.device))
+        self.meta[self.step].copy_(meta['z'])
         self.step += 1
 
     def clear(self):
@@ -102,9 +102,9 @@ class RolloutStorage:
         dones = self.dones.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
         rewards = self.rewards.flatten(0, 1)
-        indices = torch.arange(0, num_mini_batches * mini_batch_size, requires_grad=False, device=self.device).view(-1,1)
+        indices = torch.arange(0, num_mini_batches * mini_batch_size, requires_grad=False, device=self.device).view(-1, 1)
         # remove from indices the indices of dones obs and the  ones between diff environments
-        indices = indices[~dones]
+        indices = indices[dones == 0]
         indices = indices[indices % (self.num_transitions_per_env - 1) != 0]
 
         # permute
@@ -119,10 +119,8 @@ class RolloutStorage:
 
                 obs_batch = observations[batch_idx]
                 next_obs_batch = next_observations[batch_idx]
-                
                 goal_batch = goals[batch_idx]
                 next_goal_batch = next_goals[batch_idx]
-                
                 action_batch = actions[batch_idx]
                 rew_batch = rewards[batch_idx]
                 discount_batch = self.discount * torch.ones_like(rew_batch)
