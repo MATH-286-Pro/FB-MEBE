@@ -97,7 +97,7 @@ from url_benchmark import utils
 from url_benchmark import goals as _goals
 from url_benchmark.logger import Logger
 from url_benchmark.rollout_storage import RolloutStorage
-from url_benchmark.video import TrainVideoRecorder, VideoRecorder
+from url_benchmark.video_record import VideoRecorder
 from url_benchmark import agent as agents
 
 logger = logging.getLogger(__name__)
@@ -121,7 +121,6 @@ class Config:
     task: str = "walker_stand"
     obs_type: str = "states"  # [states, pixels]
     frame_stack: int = 3  # only works if obs_type=pixels
-    action_repeat: int = 1  # set to 2 for pixels
     discount: float = 0.99
     future: float = 0.99  # discount of future sampling, future=1 means no future sampling
     goal_space: tp.Optional[str] = None
@@ -136,20 +135,15 @@ class Config:
     load_model: tp.Optional[str] = None
     # training
     num_seed_frames: int = 4000
-    replay_buffer_episodes: int = 5000
     update_encoder: bool = True
-    batch_size: int = omgcf.II("agent.batch_size")
     uncertainty: bool = False
     update_every_steps: int = 1
     num_agent_updates: int = 1
-    pretrain_update_steps: int = 1000
     # to avoid hydra issues
     project_dir: str = ""
     results_dir: str = ""
     id: int = 0
     working_dir: str = ""
-    debug: bool = False
-    eval: bool = False
     # mode
     reward_free: bool = True
     # train settings
@@ -232,12 +226,7 @@ class BaseWorkspace(tp.Generic[C]):
                 cfg.device = "cpu"
                 cfg.agent.device = "cpu"
         self.device = torch.device(cfg.device)
-        task = cfg.task
 
-        self.domain = task.split('_', maxsplit=1)[0]
-        if cfg.goal_space is not None:
-            if cfg.goal_space not in _goals.goal_spaces.funcs[self.domain]:
-                raise ValueError(f"Unregistered goal space {cfg.goal_space} for domain {self.domain}")
         self.train_env = self._make_env(env_cfg)
         # self.eval_env = self._make_env()
         # create agent
@@ -245,7 +234,7 @@ class BaseWorkspace(tp.Generic[C]):
                                 self.train_env.observation_spec,
                                 self.train_env.goal_spec,
                                 self.train_env.action_spec,
-                                cfg.num_seed_frames // cfg.action_repeat,
+                                cfg.num_seed_frames,
                                 cfg.agent)
 
         # create logger
@@ -254,21 +243,17 @@ class BaseWorkspace(tp.Generic[C]):
 
         if cfg.use_wandb:
             exp_name = '_'.join([
-                cfg.experiment, cfg.agent.name, self.domain, str(cfg.id)
+                cfg.experiment, cfg.agent.name, str(cfg.id)
             ])
             wandb.init(project="fb_hw", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True), dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 32
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
-                                            num_obs=self.train_env.observation_spec.shape[0],
-                                            num_goal=self.train_env.goal_spec.shape[0],
-                                            num_actions=self.train_env.action_spec.shape[0],
+                                            num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
+                                            num_goal=int(self.train_env.goal_spec.shape[0]),  # type: ignore
+                                            num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
                                             num_z=cfg.agent.z_dim,
-                                            device=self.device)
-        cam_id = 0 if 'quadruped' not in self.domain else 2
-
-        self.video_recorder = VideoRecorder(self.work_dir if cfg.save_video else None,
-                                            camera_id=cam_id, use_wandb=self.cfg.use_wandb)
+                                            device=str(self.device))
 
         self.timer = utils.Timer()
         self.global_step = 0
@@ -282,29 +267,6 @@ class BaseWorkspace(tp.Generic[C]):
         # This is for loading an existing model
         elif cfg.load_model is not None:
             self.load_checkpoint(cfg.load_model)  # , exclude=["replay_loader"])
-
-        if self.cfg.custom_reward == "maze_multi_goal":
-            # Compute fix states and zs for evaluating disagreement through time
-            # self.agent.eval_states = _goals.MazeMultiGoal().get_eval_states(num_states=500).to(self.device)
-            self.agent.eval_states = _goals.MazeMultiGoal().get_eval_midroom_states().to(self.device)
-            self.agent.eval_zs = self.agent.sample_z(len(self.agent.eval_states), device=self.device)
-        else:
-            self.agent.eval_states = None
-
-        self.domain_tasks = {
-            "cheetah": ['walk', 'walk_backward', 'run', 'run_backward', 'flip', 'flip_backward'],
-            "quadruped": ['stand', 'walk', 'run', 'jump'],
-            "walker": ['stand', 'walk', 'run', 'flip'],
-            "manipulator": ['bring_ball'],
-            "hopper": ['hop', 'stand', 'hop_backward', 'flip', 'flip_backward'],
-            "humanoid": ['stand', 'walk', 'run'],
-            "ball_in_cup": ['catch'],
-        }
-
-    # def _make_env(self) -> dmc.EnvWrapper:
-    #     cfg = self.cfg
-    #     return dmc.make(cfg.task, cfg.obs_type, cfg.frame_stack, cfg.action_repeat, cfg.seed,
-    #                     goal_space=cfg.goal_space, append_goal_to_observation=cfg.append_goal_to_observation)
 
     def _make_env(self, env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg):
         """Train with RSL-RL agent."""
@@ -334,35 +296,17 @@ class BaseWorkspace(tp.Generic[C]):
 
         # create isaac environment
         env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-
-        # convert to single-agent instance if required by the RL algorithm
-        if isinstance(env.unwrapped, DirectMARLEnv):
-            env = multi_agent_to_single_agent(env)
+        if args_cli.video:
+            print("[INFO] Recording videos during training.")
 
         # save resume path before creating a new log_dir
         # if agent_cfg.resume:
         #     resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
 
-        # # wrap for video recording
-        # if args_cli.video:
-        #     video_kwargs = {
-        #         "video_folder": os.path.join(log_dir, "videos", "train"),
-        #         "step_trigger": lambda step: step % args_cli.video_interval == 0,
-        #         "video_length": args_cli.video_length,
-        #         "disable_logger": True,
-        #     }
-        #     print("[INFO] Recording videos during training.")
-        #     print_dict(video_kwargs, nesting=4)
-        #     env = gym.wrappers.RecordVideo(env, **video_kwargs)
-
         # wrap around environment for fb
         env = FBVecEnvWrapper(env)
 
         return env
-
-    @property
-    def global_frame(self) -> int:
-        return self.global_step * self.cfg.action_repeat
 
     def _make_custom_reward(self, seed: int) -> tp.Optional[_goals.BaseReward]:
         """Creates a custom reward function if provided in configuration
@@ -424,25 +368,19 @@ class BaseWorkspace(tp.Generic[C]):
 class Workspace(BaseWorkspace[Config]):
     def __init__(self, cfg: Config, env_cfg) -> None:
         super().__init__(cfg, env_cfg)
-        self.train_video_recorder = TrainVideoRecorder(self.work_dir if cfg.save_train_video else None,
-                                                       camera_id=self.video_recorder.camera_id, use_wandb=self.cfg.use_wandb)
+        self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb)
         if not self._checkpoint_filepath.exists():  # don't relay if there is a checkpoint
             if cfg.load_replay_buffer is not None:
                 self.load_checkpoint(cfg.load_replay_buffer, only=["replay_loader"])
 
     def train(self) -> None:
         # predicates
-        train_until_step = utils.Until(self.cfg.num_train_frames,
-                                       self.cfg.action_repeat)
-        seed_until_step = utils.Until(self.num_transitions_per_env,
-                                      self.cfg.action_repeat)
-        eval_every_step = utils.Every(self.cfg.eval_every_frames,
-                                      self.cfg.action_repeat)
-        update_every_step = utils.Every(self.num_transitions_per_env,
-                                        self.cfg.action_repeat)
+        train_until_step = utils.Until(self.cfg.num_train_frames)
+        seed_until_step = utils.Until(self.num_transitions_per_env)
+        eval_every_step = utils.Every(self.cfg.eval_every_frames)
+        update_every_step = utils.Every(self.num_transitions_per_env)
         log_every = self.num_transitions_per_env * 100
-        assert not (log_every % self.num_transitions_per_env), 'log_every should be a multiple of num_transitions_per_env'
-        log_every_step = utils.Every(log_every, self.cfg.action_repeat)
+        log_every_step = utils.Every(log_every)
 
         time_step = self.train_env.reset()
         meta = self.agent.init_meta(time_step.observation)
@@ -455,8 +393,8 @@ class Workspace(BaseWorkspace[Config]):
                 # Num of updates is managed by update function now!
                 metrics = self.agent.update(self.replay_loader, self.global_step)
                 if log_every_step(self.global_step):
-                    self.logger.log_metrics(metrics, step=self.global_frame, ty='train')
-                    self.logger.dump(step=self.global_frame, ty='train')
+                    self.logger.log_metrics(metrics, step=self.global_step, ty='train')
+                    self.logger.dump(step=self.global_step, ty='train')
 
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
                                           obs=time_step.observation)
@@ -470,20 +408,20 @@ class Workspace(BaseWorkspace[Config]):
             time_step = self.train_env.step(action)
             self.replay_loader.add_transitions(time_step, meta)
             self.global_step += 1
+            self.train_video_recorder.step(self.global_step)
 
             # save checkpoint to reload
-            # if self.replay_loader._full:
-            #     if not self.global_frame % self.cfg.checkpoint_every:
-            #         self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_frame{self.global_frame}.pt'))
+            if not self.global_step % self.cfg.checkpoint_every:
+                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_frame{self.global_step}.pt'))
+
         self.save_checkpoint(self._checkpoint_filepath)  # make sure we save the final checkpoint
         self.train_env.close()
 
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")
 def main(cfg: omgcf.DictConfig) -> None:
-    # we assume cfg is a PretrainConfig (but actually not really)
-    # calls Config and PretrainConfig
     env_cfg, _ = register_task_to_hydra(args_cli.task, 'rsl_rl_cfg_entry_point')
+    # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.train()
 
