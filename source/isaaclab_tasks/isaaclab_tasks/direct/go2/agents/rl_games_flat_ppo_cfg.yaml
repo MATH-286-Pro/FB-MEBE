@@ -39,7 +39,7 @@ params:
   load_path: '' # path to the checkpoint to load
 
   config:
-    name: anymal_c_flat_direct
+    name: go2_flat_direct
     env_name: rlgpu
     device: 'cuda:0'
     device_name: 'cuda:0'
