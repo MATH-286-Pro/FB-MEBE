@@ -11,7 +11,7 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 @configclass
 class UnitreeGo2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
-    max_iterations = 300
+    max_iterations = 500
     save_interval = 50
     experiment_name = "unitree_go2_flat"
     empirical_normalization = False
