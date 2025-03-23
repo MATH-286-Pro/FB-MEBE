@@ -1,0 +1,31 @@
+defaults:
+  - workspace_config
+  - agent: fb_ddpg
+  - override hydra/launcher: submitit_slurm
+  - _self_
+
+
+task: point_mass_maze_reach_bottom_right
+custom_reward: maze_multi_goal
+goal_space: simplified_point_mass_maze
+uncertainty: False
+load_replay_buffer: /home/nuria/phd/controllable_agent/datasets/point_mass_maze/proto/replay.pt
+num_seed_frames: 0 # random exploration steps at beginning
+eval_every_frames: 100000
+use_wandb: true
+
+hydra:
+  run:
+    dir: ./exp_local/${now:%Y.%m.%d}/${now:%H%M%S}_${agent.name}_${task}_${experiment}
+  sweep:
+    dir: ./exp_paper/${now:%Y.%m.%d}_${task}/${now:%H%M%S}_${agent.name}_${task}_${experiment}
+    subdir: ${hydra.job.num}
+  launcher:
+    timeout_min: 4300
+    cpus_per_task: 10
+    gpus_per_node: 1
+    tasks_per_node: 1
+    mem_gb: 400
+    nodes: 1
+    submitit_folder: ./exp_paper/${now:%Y.%m.%d}_${task}/${now:%H%M%S}_${agent.name}_${task}_${experiment}/.slurm
+    partition: learnlab # devlab learnlab
