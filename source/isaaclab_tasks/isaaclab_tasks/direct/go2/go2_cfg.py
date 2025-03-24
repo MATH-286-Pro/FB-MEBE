@@ -55,7 +55,8 @@ class Go2FlatEnvCfg(DirectRLEnvCfg):
     decimation = 4
     action_scale = 0.25
     action_space = 12
-    observation_space = 48
+    observation_space = 45
+    goal_space = 9
     state_space = 0
 
     # simulation

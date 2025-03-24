@@ -164,17 +164,17 @@ class FBVecEnvWrapper(VecEnv):
     @property
     def observation_spec(self):
         """Returns the observation specification of the environment."""
-        return self.env.single_observation_space['policy']
+        return self.env.unwrapped.single_observation_space['policy']
 
     @property
     def goal_spec(self):
         """Returns the goal specification of the environment."""
-        return self.env.single_observation_space['goal']
+        return self.env.unwrapped.single_observation_space['goal']
 
     @property
     def action_spec(self):
         """Returns the action specification of the environment."""
-        return self.env.single_action_space
+        return self.env.unwrapped.single_action_space
 
     @classmethod
     def class_name(cls) -> str:

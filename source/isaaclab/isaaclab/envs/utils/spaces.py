@@ -194,10 +194,10 @@ def replace_env_cfg_spaces_with_strings(env_cfg: object) -> object:
     Returns:
         Environment config instance with spaces replaced if any.
     """
-    for attr in ["observation_space", "action_space", "state_space"]:
+    for attr in ["observation_space", "goal_space", "action_space", "state_space"]:
         if hasattr(env_cfg, attr):
             setattr(env_cfg, attr, serialize_space(getattr(env_cfg, attr)))
-    for attr in ["observation_spaces", "action_spaces"]:
+    for attr in ["observation_spaces", "goal_spaces", "action_spaces"]:
         if hasattr(env_cfg, attr):
             setattr(env_cfg, attr, {k: serialize_space(v) for k, v in getattr(env_cfg, attr).items()})
     return env_cfg
@@ -212,10 +212,10 @@ def replace_strings_with_env_cfg_spaces(env_cfg: object) -> object:
     Returns:
         Environment config instance with spaces replaced if any.
     """
-    for attr in ["observation_space", "action_space", "state_space"]:
+    for attr in ["observation_space", "goal_space", "action_space", "state_space"]:
         if hasattr(env_cfg, attr):
             setattr(env_cfg, attr, deserialize_space(getattr(env_cfg, attr)))
-    for attr in ["observation_spaces", "action_spaces"]:
+    for attr in ["observation_spaces", "goal_spaces", "action_spaces"]:
         if hasattr(env_cfg, attr):
             setattr(env_cfg, attr, {k: deserialize_space(v) for k, v in getattr(env_cfg, attr).items()})
     return env_cfg
