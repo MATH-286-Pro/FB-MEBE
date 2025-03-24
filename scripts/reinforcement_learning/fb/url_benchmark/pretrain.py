@@ -368,7 +368,7 @@ class BaseWorkspace(tp.Generic[C]):
 class Workspace(BaseWorkspace[Config]):
     def __init__(self, cfg: Config, env_cfg) -> None:
         super().__init__(cfg, env_cfg)
-        self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb)
+        self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb, enabled=args_cli.video)
         if not self._checkpoint_filepath.exists():  # don't relay if there is a checkpoint
             if cfg.load_replay_buffer is not None:
                 self.load_checkpoint(cfg.load_replay_buffer, only=["replay_loader"])

@@ -1,5 +1,6 @@
 # for fb
-
+setuptools==75.8.0
+wheel==0.45.1
 numpy==1.24.3
 torch==2.5.1+cu118
 torchvision==0.20.1+cu118

@@ -18,8 +18,9 @@ class VideoRecorder:
             video_prefix: str = "rl-video",
             video_fps: int = 30,
             wandb: bool = False,
+            enabled: bool = False
     ):
-        if env.render_mode in {None, "human", "ansi", "ansi_list"}:
+        if env.render_mode in {None, "human", "ansi", "ansi_list"} and enabled:
             raise ValueError(
                 f"Render mode is {env.render_mode}, which is incompatible with"
                 f" RecordVideo. Initialize your environment with a render_mode"
@@ -36,7 +37,7 @@ class VideoRecorder:
         self.video_fps = video_fps
         self.video_interval = video_interval
         self.video_trigger = video_interval - video_length - 1
-
+        self.enabled = enabled
         self.video_id = 0
         self.recording = False
         self.recorded_frames = []
@@ -54,7 +55,8 @@ class VideoRecorder:
         self.recorded_frames.append(frame)
 
     def step(self, iter_id):
-
+        if not self.enabled:
+            return
         if self.recording:
             self.capture_frame()
             if (iter_id - self.video_id) >= self.video_length:
