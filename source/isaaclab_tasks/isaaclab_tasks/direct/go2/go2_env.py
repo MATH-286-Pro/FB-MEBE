@@ -85,7 +85,7 @@ class Go2Env(DirectRLEnv):
                             add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
                 self._robot.data.projected_gravity_b + (
                             add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
-                self._commands,
+                # self._commands,
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos + (
                             add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
                 self._robot.data.joint_vel + (
@@ -94,7 +94,16 @@ class Go2Env(DirectRLEnv):
             ],
             dim=-1,
         )
+        goal = torch.cat([
+            self._robot.data.root_lin_vel_b + (
+                    add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
+            self._robot.data.root_ang_vel_b + (
+                    add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
+            self._robot.data.projected_gravity_b + (
+                    add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
+        ], dim=-1)
         observations = {"policy": obs}
+        observations["goal"] = goal
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
