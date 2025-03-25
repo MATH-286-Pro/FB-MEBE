@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from isaaclab.envs import DirectMARLEnv, DirectRLEnv, ManagerBasedRLEnv
+from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 
 """
 Vectorized environment wrapper.
@@ -37,7 +37,7 @@ Vectorized environment wrapper.
 
 
 def SkrlVecEnvWrapper(
-    env: ManagerBasedRLEnv | DirectRLEnv | DirectMARLEnv,
+    env: ManagerBasedRLEnv | DirectRLEnv,
     ml_framework: Literal["torch", "jax", "jax-numpy"] = "torch",
     wrapper: Literal["auto", "isaaclab", "isaaclab-single-agent", "isaaclab-multi-agent"] = "isaaclab",
 ):
@@ -65,10 +65,9 @@ def SkrlVecEnvWrapper(
     if (
         not isinstance(env.unwrapped, ManagerBasedRLEnv)
         and not isinstance(env.unwrapped, DirectRLEnv)
-        and not isinstance(env.unwrapped, DirectMARLEnv)
     ):
         raise ValueError(
-            "The environment must be inherited from ManagerBasedRLEnv, DirectRLEnv or DirectMARLEnv. Environment type:"
+            "The environment must be inherited from ManagerBasedRLEnv, DirectRLEnv. Environment type:"
             f" {type(env)}"
         )
 

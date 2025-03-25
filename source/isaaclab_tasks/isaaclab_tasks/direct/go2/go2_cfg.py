@@ -51,7 +51,7 @@ class EventCfg:
 @configclass
 class Go2FlatEnvCfg(DirectRLEnvCfg):
     # env
-    episode_length_s = 20.0
+    episode_length_s = 5.0
     decimation = 4
     action_scale = 0.25
     action_space = 12

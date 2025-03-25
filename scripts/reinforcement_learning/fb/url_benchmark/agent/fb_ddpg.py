@@ -43,7 +43,6 @@ class FBDDPGAgentConfig:
     lr_coef: float = 1
     fb_target_tau: float = 0.01  # 0.001-0.01
     update_every_steps: int = 2
-    use_wandb: bool = omegaconf.II("use_wandb")  # ${use_wandb}
     num_expl_steps: int = omegaconf.MISSING  # ???  # to be specified later
     num_inference_steps: int = 5120
     hidden_dim: int = 1024   # 128, 2048
@@ -182,25 +181,13 @@ class FBDDPGAgent:
         return self.infer_meta_from_obs_and_rewards(obs, reward)
 
     def infer_meta_from_obs_and_rewards(self, obs: torch.Tensor, reward: torch.Tensor) -> MetaDict:
-        # print('max reward: ', reward.max().cpu().item())
-        # print('99 percentile: ', torch.quantile(reward, 0.99).cpu().item())
-        # print('median reward: ', reward.median().cpu().item())
-        # print('min reward: ', reward.min().cpu().item())
-        # print('mean reward: ', reward.mean().cpu().item())
-        # print('num reward: ', reward.shape[0])
-
-        # filter out small reward
-        # pdb.set_trace()
-        # idx = torch.where(reward >= torch.quantile(reward, 0.99))[0]
-        # obs = obs[idx]
-        # reward = reward[idx]
         with torch.no_grad():
             B = self.backward_net(obs)
         z = torch.matmul(reward.T, B) / reward.shape[0]
         if self.cfg.norm_z:
             z = math.sqrt(self.cfg.z_dim) * F.normalize(z, dim=1)
         meta = OrderedDict()
-        meta['z'] = z.squeeze().cpu().numpy()
+        meta['z'] = z
         return meta
 
     def sample_z(self, size, device: str = "cpu"):
@@ -269,8 +256,7 @@ class FBDDPGAgent:
         return meta
 
     def act(self, obs, meta, step, eval_mode) -> tp.Any:
-        obs = torch.as_tensor(obs, device=self.cfg.device, dtype=torch.float32).unsqueeze(0)  # type: ignore
-        z = torch.as_tensor(meta['z'], device=self.cfg.device).unsqueeze(0)  # type: ignore
+        z = meta['z']
         if self.cfg.boltzmann:
             dist = self.actor(obs, z)
         else:
@@ -282,7 +268,7 @@ class FBDDPGAgent:
             action = dist.sample()
             if step < self.cfg.num_expl_steps:
                 action.uniform_(-1.0, 1.0)
-        return action.cpu().numpy()[0]
+        return action
 
     def compute_z_correl(self, time_step: TimeStep, meta: MetaDict) -> float:
         goal = time_step.goal  # type: ignore
@@ -313,18 +299,17 @@ class FBDDPGAgent:
                 stddev = utils.schedule(self.cfg.stddev_schedule, step)
                 dist = self.actor(next_obs, z, stddev)
                 next_action = dist.sample(clip=self.cfg.stddev_clip)
-            # target_F1, target_F2 = torch.ones((self.n_ensemble, 1024, 50), device = 'cuda:0'), torch.ones((self.n_ensemble, 1024, 50), device = 'cuda:0') #self.forward_target_net((next_obs, z, next_action))  # batch x z_dim
             target_F1, target_F2 = self.forward_target_net((next_obs, z, next_action))  # e? x batch x z_dim
-            target_B = self.backward_target_net(goal)  # batch x z_dim
+            target_B = self.backward_target_net(next_goal)  # batch x z_dim # TODO changed to next_goal for fb_diag to make sense
             if not self.cfg.uncertainty:
                 target_M1 = torch.einsum('sd, td -> st', target_F1, target_B)  # batch x batch
                 target_M2 = torch.einsum('sd, td -> st', target_F2, target_B)  # batch x batch
             else:
-                target_M1 = torch.einsum('esd, ...td -> est', target_F1, target_B)  # e x batch x batch torch.ones((self.n_ensemble, 1024, 1024), device = target_F1.device) #
-                target_M2 = torch.einsum('esd, ...td -> est', target_F2, target_B)  # e x batch x batch torch.ones((self.n_ensemble, 1024, 1024), device = target_F1.device) #
+                target_M1 = torch.einsum('esd, ...td -> est', target_F1, target_B)
+                target_M2 = torch.einsum('esd, ...td -> est', target_F2, target_B)
             target_M = torch.min(target_M1, target_M2)
         F1, F2 = self.forward_net((obs, z, action))  # batch x z_dim
-        B = self.backward_net(goal)  # batch x z_dim
+        B = self.backward_net(next_goal)  # batch x z_dim # TODO changed to next_goal for fb_diag to make sense
         if not self.cfg.uncertainty:
             M1 = torch.einsum('sd, td -> st', F1, B)  # batch x batch
             M2 = torch.einsum('sd, td -> st', F2, B)  # batch x batch
@@ -339,10 +324,9 @@ class FBDDPGAgent:
             off_diag = ~I.bool()
             # # get indices for the first dimension of the M ensemble matrix
             E_indices = torch.arange(M1.shape[0]).unsqueeze(-1).unsqueeze(-1)  # (e, 1, 1)
-            # compute the offidagonal term for each member averaging over batch dim, and summing over E and over M1 and M2
+            # compute the offdiagonal term for each member averaging over batch dim, and summing over E and over M1 and M2
             # this one seems to be quite costly
             scaled_T = discount * target_M
-            # fb_offdiag: tp.Any = 1/(2*self.cfg.n_ensemble) * sum(sum((M - scaled_T)[E_indices, off_diag].pow(2).mean(-1) for M in [M1, M2]))
             fb_offdiag: tp.Any = 0.5 * (sum((M - scaled_T)[E_indices, off_diag].pow(2).mean() for M in [M1, M2]))
 
             # M.diagonal(dim1=-2, dim2=-1) returns diagonals over every ensemble so size is: E x batch
@@ -350,8 +334,7 @@ class FBDDPGAgent:
             fb_diag: tp.Any = -sum(M.diagonal(dim1=-2, dim2=-1).mean() for M in [M1, M2])
         fb_loss = fb_offdiag + fb_diag
 
-        # ORTHONORMALITY LOSS FOR BACKWARD EMBEDDING
-
+        # orthonormality loss for backward embedding
         Cov = torch.matmul(B, B.T)
         orth_loss_diag = - 2 * Cov.diag().mean()
         orth_loss_offdiag = Cov[off_diag].pow(2).mean()
@@ -364,24 +347,23 @@ class FBDDPGAgent:
         # orth_loss =  var_loss + cov_loss
         # fb_loss += self.cfg.ortho_coef * orth_loss
 
-        if self.cfg.use_wandb:
-            metrics['target_M'] = target_M.mean().item()
-            metrics['M1'] = M1.mean().item()
-            metrics['F1'] = F1.mean().item()
-            metrics['B'] = B.mean().item()
-            metrics['B_norm'] = torch.norm(B, dim=-1).mean().item()
-            metrics['z_norm'] = torch.norm(z, dim=-1).mean().item()
-            metrics['fb_loss'] = fb_loss.item()
-            metrics['fb_diag'] = fb_diag.item()
-            metrics['fb_offdiag'] = fb_offdiag.item()
-            metrics['orth_loss'] = orth_loss.item()
-            metrics['orth_loss_diag'] = orth_loss_diag.item()
-            metrics['orth_loss_offdiag'] = orth_loss_offdiag.item()
-            eye_diff = torch.matmul(B.T, B) / B.shape[0] - torch.eye(B.shape[1], device=B.device)
-            metrics['orth_linf'] = torch.max(torch.abs(eye_diff)).item()
-            metrics['orth_l2'] = eye_diff.norm().item() / math.sqrt(B.shape[1])
-            if isinstance(self.fb_opt, torch.optim.Adam):
-                metrics["fb_opt_lr"] = self.fb_opt.param_groups[0]["lr"]
+        metrics['target_M'] = target_M.mean().item()
+        metrics['M1'] = M1.mean().item()
+        metrics['F1'] = F1.mean().item()
+        metrics['B'] = B.mean().item()
+        metrics['B_norm'] = torch.norm(B, dim=-1).mean().item()
+        metrics['z_norm'] = torch.norm(z, dim=-1).mean().item()
+        metrics['fb_loss'] = fb_loss.item()
+        metrics['fb_diag'] = fb_diag.item()
+        metrics['fb_offdiag'] = fb_offdiag.item()
+        metrics['orth_loss'] = orth_loss.item()
+        metrics['orth_loss_diag'] = orth_loss_diag.item()
+        metrics['orth_loss_offdiag'] = orth_loss_offdiag.item()
+        eye_diff = torch.matmul(B.T, B) / B.shape[0] - torch.eye(B.shape[1], device=B.device)
+        metrics['orth_linf'] = torch.max(torch.abs(eye_diff)).item()
+        metrics['orth_l2'] = eye_diff.norm().item() / math.sqrt(B.shape[1])
+        if isinstance(self.fb_opt, torch.optim.Adam):
+            metrics["fb_opt_lr"] = self.fb_opt.param_groups[0]["lr"]
 
         # optimize FB
         self.fb_opt.zero_grad(set_to_none=True)
@@ -418,11 +400,10 @@ class FBDDPGAgent:
         actor_loss.backward()
         self.actor_opt.step()
 
-        if self.cfg.use_wandb:
-            metrics['actor_loss'] = actor_loss.item()
-            metrics['q'] = Q.mean().item()
-            metrics['actor_logprob'] = log_prob.mean().item()
-            # metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()
+        metrics['actor_loss'] = actor_loss.item()
+        metrics['q'] = Q.mean().item()
+        metrics['actor_logprob'] = log_prob.mean().item()
+        # metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()
 
         return metrics
 
@@ -448,8 +429,7 @@ class FBDDPGAgent:
         actor_loss.backward()
         self.high_expl_actor_opt.step()
 
-        if self.cfg.use_wandb:
-            metrics['high_actor_loss'] = actor_loss.item()
+        metrics['high_actor_loss'] = actor_loss.item()
         return metrics
 
     def update(self, replay_loader: RolloutStorage, step: int) -> tp.Dict[str, float]:

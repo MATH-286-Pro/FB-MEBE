@@ -17,13 +17,13 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 Formating = tp.List[tp.Tuple[str, str, str]]
-COMMON_TRAIN_FORMAT = [('frame', 'F', 'int'), ('step', 'S', 'int'),
-                       ('episode', 'E', 'int'), ('episode_length', 'L', 'int'),
-                       ('episode_reward', 'R', 'float'),
-                       ('fps', 'FPS', 'float'), ('total_time', 'T', 'time')]
+COMMON_TRAIN_FORMAT = [('step', 'S', 'int'),
+                       ('total_time', 'T', 'time'),
+                       ('fb_loss', 'FB_LOSS', 'float'), ('fb_offdiag', 'OFF_DIAG_LOSS', 'float'),
+                       ('fb_diag', 'DIAG_LOSS', 'float'),]
 
-COMMON_EVAL_FORMAT = [('frame', 'F', 'int'), ('step', 'S', 'int'),
-                      ('episode', 'E', 'int'), ('episode_length', 'L', 'int'),
+COMMON_EVAL_FORMAT = [('step', 'S', 'int'),
+                      ('episode_length', 'L', 'int'),
                       ('episode_reward', 'R', 'float'),
                       ('total_time', 'T', 'time')]
 
@@ -154,17 +154,16 @@ class Logger:
                                     use_wandb=use_wandb)
         self.use_wandb = use_wandb
 
-
-    def log(self, key: str, value: tp.Union[float, torch.Tensor], step: int) -> None:
+    def log(self, key: str, value: tp.Union[float, torch.Tensor]) -> None:
         assert key.startswith('train') or key.startswith('eval')
         if isinstance(value, torch.Tensor):
             value = value.item()
         mg = self._train_mg if key.startswith('train') else self._eval_mg
         mg.log(key, value)
 
-    def log_metrics(self, metrics: tp.Dict[str, float], step: int, ty: str) -> None:
+    def log_metrics(self, metrics: tp.Dict[str, float], ty: str) -> None:
         for key, value in metrics.items():
-            self.log(f'{ty}/{key}', value, step)
+            self.log(f'{ty}/{key}', value)
 
     def dump(self, step, ty=None) -> None:
         try:

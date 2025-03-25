@@ -53,10 +53,11 @@ class RolloutStorage:
 
         self.device = device
 
-        self.num_obs = num_obs
+        self.num_obs = num_obs  # obs dim
         self.num_actions = num_actions
         self.num_z = num_z
         self.discount = discount
+        self.num_goal = num_goal  # goal dim
 
         # Core
         self.observations = torch.zeros(num_transitions_per_env, num_envs, num_obs, device=self.device)
@@ -130,3 +131,6 @@ class RolloutStorage:
                 yield EpisodeBatch(obs=obs_batch, goal=goal_batch, action=action_batch, reward=rew_batch, discount=discount_batch,
                                    next_obs=next_obs_batch, next_goal=next_goal_batch,
                                    future_obs=future_obs, future_goal=future_goal)
+
+    def __len__(self):
+        return self.step * self.num_envs

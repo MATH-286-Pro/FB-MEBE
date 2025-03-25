@@ -42,24 +42,15 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import os
 import torch
-from datetime import datetime
 
-from rsl_rl.runners import OnPolicyRunner
 
 from isaaclab.envs import (
-    DirectMARLEnv,
-    DirectMARLEnvCfg,
     DirectRLEnvCfg,
     ManagerBasedRLEnvCfg,
-    multi_agent_to_single_agent,
 )
-from isaaclab.utils.dict import print_dict
-from isaaclab.utils.io import dump_pickle, dump_yaml
-
 from vecenv_wrapper import FBVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import register_task_to_hydra, hydra_task_config
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -67,14 +58,12 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
 torch.backends.cudnn.benchmark = False
 
-import json
-import pdb  # pylint: disable=unused-import
 import logging
 import dataclasses
 import typing as tp
 import warnings
 from pathlib import Path
-
+import time
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -104,6 +93,10 @@ logger = logging.getLogger(__name__)
 # torch.backends.cudnn.benchmark = True
 # os.environ['WANDB_MODE']='offline'
 
+
+def arr_to_str(arr: np.array) -> str:
+    return "[" + ",".join(f"{x:.1f}" for x in arr) + "]"
+
 # # # Config # # #
 
 
@@ -120,7 +113,6 @@ class Config:
     # task settings
     task: str = "walker_stand"
     obs_type: str = "states"  # [states, pixels]
-    frame_stack: int = 3  # only works if obs_type=pixels
     discount: float = 0.99
     future: float = 0.99  # discount of future sampling, future=1 means no future sampling
     goal_space: tp.Optional[str] = None
@@ -134,7 +126,7 @@ class Config:
     checkpoint_every: int = 100000
     load_model: tp.Optional[str] = None
     # training
-    num_seed_frames: int = 4000
+    num_seed_steps: int = 4000
     update_encoder: bool = True
     uncertainty: bool = False
     update_every_steps: int = 1
@@ -147,9 +139,9 @@ class Config:
     # mode
     reward_free: bool = True
     # train settings
-    num_train_frames: int = 2000010
+    num_train_steps: int = 2000010
     # snapshot
-    eval_every_frames: int = 10000
+    eval_every_steps: int = 10000
     load_replay_buffer: tp.Optional[str] = None
     save_train_video: bool = False
 
@@ -174,39 +166,6 @@ def make_agent(
 
 
 C = tp.TypeVar("C", bound=Config)
-
-
-# def _init_eval_meta(workspace: "BaseWorkspace", custom_reward: tp.Optional[_goals.BaseReward] = None) -> agents.MetaDict:
-#     if custom_reward is not None:
-#         try:  # if the custom reward implements a goal, return it
-#             goal = custom_reward.get_goal(workspace.cfg.goal_space)
-#             return workspace.agent.get_goal_meta(goal)
-#         except Exception:  # pylint: disable=broad-exceptf
-#             pass
-#         # TODO Assuming fix episode length:
-#         num_steps = workspace.agent.cfg.num_inference_steps  # type: ignore
-#         if len(workspace.replay_loader) * workspace.replay_loader._episodes_length[0] < num_steps:
-#             # print("Not enough data for inference, skipping eval")
-#             return None
-#         obs_list, reward_list = [], []
-#         batch_size = 0
-#         while batch_size < num_steps:
-#             batch = workspace.replay_loader.sample(workspace.cfg.batch_size, custom_reward=custom_reward)
-#             batch = batch.to(workspace.cfg.device)
-#             obs_list.append(batch.next_goal if workspace.cfg.goal_space is not None else batch.next_obs)  # TODO: why next_obs and not obs?
-#             reward_list.append(batch.reward)
-#             batch_size += batch.next_obs.size(0)
-#         obs, reward = torch.cat(obs_list, 0), torch.cat(reward_list, 0)  # type: ignore
-#         obs_t, reward_t = obs[:num_steps], reward[:num_steps]
-#         return workspace.agent.infer_meta_from_obs_and_rewards(obs_t, reward_t)
-
-#     if workspace.cfg.goal_space is not None:
-#         funcs = _goals.goals.funcs.get(workspace.cfg.goal_space, {})
-#         if workspace.cfg.task in funcs:
-#             g = funcs[workspace.cfg.task]()
-#             return workspace.agent.get_goal_meta(g)
-#     print('\n***\n inferring eval meta from replay buffer :s\n***\n')
-#     return workspace.agent.infer_meta(workspace.replay_loader)
 
 
 class BaseWorkspace(tp.Generic[C]):
@@ -234,7 +193,7 @@ class BaseWorkspace(tp.Generic[C]):
                                 self.train_env.observation_spec,
                                 self.train_env.goal_spec,
                                 self.train_env.action_spec,
-                                cfg.num_seed_frames,
+                                cfg.num_seed_steps,
                                 cfg.agent)
 
         # create logger
@@ -254,6 +213,13 @@ class BaseWorkspace(tp.Generic[C]):
                                             num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
                                             num_z=cfg.agent.z_dim,
                                             device=str(self.device))
+        # TODO episode length
+        self.eval_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.train_env.max_episode_length, discount=cfg.discount,
+                                          num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
+                                          num_goal=int(self.train_env.goal_spec.shape[0]),  # type: ignore
+                                          num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
+                                          num_z=cfg.agent.z_dim,
+                                          device=str(self.device))
 
         self.timer = utils.Timer()
         self.global_step = 0
@@ -268,31 +234,15 @@ class BaseWorkspace(tp.Generic[C]):
         elif cfg.load_model is not None:
             self.load_checkpoint(cfg.load_model)  # , exclude=["replay_loader"])
 
-    def _make_env(self, env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg):
+    def _make_env(self, env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg):
         """Train with RSL-RL agent."""
         # override configurations with non-hydra CLI arguments
         # agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
         env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-        # agent_cfg.max_iterations = (
-        #     args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
-        # )
-
         # set the environment seed
         # note: certain randomizations occur in the environment initialization so we set the seed here
         # env_cfg.seed = agent_cfg.seed
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
-
-        # # specify directory for logging experiments
-        # log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
-        # log_root_path = os.path.abspath(log_root_path)
-        # print(f"[INFO] Logging experiment in directory: {log_root_path}")
-        # # specify directory for logging runs: {time-stamp}_{run_name}
-        # log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        # # This way, the Ray Tune workflow can extract experiment name.
-        # print(f"Exact experiment name requested from command line: {log_dir}")
-        # if agent_cfg.run_name:
-        #     log_dir += f"_{agent_cfg.run_name}"
-        # log_dir = os.path.join(log_root_path, log_dir)
 
         # create isaac environment
         env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -368,18 +318,19 @@ class BaseWorkspace(tp.Generic[C]):
 class Workspace(BaseWorkspace[Config]):
     def __init__(self, cfg: Config, env_cfg) -> None:
         super().__init__(cfg, env_cfg)
-        self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb, enabled=args_cli.video)
+        # self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb, enabled=args_cli.video)
+        self.eval_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_prefix='eval_video', video_interval=1, video_length=int(self.train_env.max_episode_length - 1), wandb=self.cfg.use_wandb, enabled=args_cli.video)
         if not self._checkpoint_filepath.exists():  # don't relay if there is a checkpoint
             if cfg.load_replay_buffer is not None:
                 self.load_checkpoint(cfg.load_replay_buffer, only=["replay_loader"])
 
     def train(self) -> None:
         # predicates
-        train_until_step = utils.Until(self.cfg.num_train_frames)
+        train_until_step = utils.Until(self.cfg.num_train_steps)
         seed_until_step = utils.Until(self.num_transitions_per_env)
-        eval_every_step = utils.Every(self.cfg.eval_every_frames)
+        eval_every_step = utils.Every(self.cfg.eval_every_steps)
         update_every_step = utils.Every(self.num_transitions_per_env)
-        log_every = self.num_transitions_per_env * 100
+        log_every = self.num_transitions_per_env * 10
         log_every_step = utils.Every(log_every)
 
         time_step = self.train_env.reset()
@@ -393,13 +344,14 @@ class Workspace(BaseWorkspace[Config]):
                 # Num of updates is managed by update function now!
                 metrics = self.agent.update(self.replay_loader, self.global_step)
                 if log_every_step(self.global_step):
-                    self.logger.log_metrics(metrics, step=self.global_step, ty='train')
+                    metrics['step'] = self.global_step
+                    self.logger.log_metrics(metrics, ty='train')
                     self.logger.dump(step=self.global_step, ty='train')
 
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
                                           obs=time_step.observation)
             # sample action
-            with torch.no_grad(), utils.eval_mode(self.agent):
+            with torch.no_grad():  # , utils.eval_mode(self.agent):
                 action = self.agent.act(time_step.observation,
                                         meta,
                                         self.global_step,
@@ -407,15 +359,69 @@ class Workspace(BaseWorkspace[Config]):
             # take env step
             time_step = self.train_env.step(action)
             self.replay_loader.add_transitions(time_step, meta)
-            self.global_step += 1
-            self.train_video_recorder.step(self.global_step)
+
+            # eval
+            if eval_every_step(self.global_step):
+                t = time.time()
+                self.eval()
+                eval_time = time.time() - t
+                self.logger.log_metrics({'total_time': eval_time}, ty='eval')
+                self.logger.dump(self.global_step)
+                # Reset everything:
+                self.replay_loader.clear()
+                time_step = self.train_env.reset()
 
             # save checkpoint to reload
-            if not self.global_step % self.cfg.checkpoint_every:
-                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_frame{self.global_step}.pt'))
+            if self.global_step > 100 and not self.global_step % self.cfg.checkpoint_every:
+                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_step{self.global_step}.pt'))
+            self.global_step += 1
 
         self.save_checkpoint(self._checkpoint_filepath)  # make sure we save the final checkpoint
         self.train_env.close()
+
+    def eval(self) -> None:
+        self.collect_eval_data()
+        eval_meta = self.init_eval_meta()
+        eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
+        self.eval_loader.clear()
+
+        self.eval_step = 0
+        time_step = self.train_env.reset()
+        while self.eval_step < self.train_env.max_episode_length:
+            with torch.no_grad():
+                action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
+                time_step = self.train_env.step(action)
+                self.eval_loader.add_transitions(time_step, eval_meta)
+                self.eval_step += 1
+                self.eval_video_recorder.step(self.global_step + self.eval_step)
+        total_reward = self.eval_loader.rewards.sum().item()
+        task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
+        self.logger.log_metrics({"episode_reward": total_reward,
+                                 f"episode_reward{task}": total_reward,
+                                 "episode_length": self.eval_step,
+                                 "step": self.global_step,
+                                 },
+                                ty='eval')
+        self.eval_video_recorder.close()
+
+    def collect_eval_data(self) -> None:
+        # TODO set desired reward cfg
+        self.eval_loader.clear()
+        time_step = self.train_env.reset()
+        meta = self.agent.init_meta(time_step.observation)
+        assert self.cfg.agent.num_inference_steps <= self.train_env.num_envs * self.eval_loader.num_transitions_per_env
+        while len(self.eval_loader) < self.cfg.agent.num_inference_steps:
+            meta = self.agent.update_meta(meta, self.train_env.episode_length_buf, obs=time_step.observation)  # TODO: update more often to have more diversity of zs
+            with torch.no_grad():  # , utils.eval_mode(self.agent):
+                action = self.agent.act(time_step.observation, meta, self.global_step, eval_mode=False)
+            time_step = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
+            self.eval_loader.add_transitions(time_step, meta)
+
+    def init_eval_meta(self):  # -> MetaDict:
+        obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim
+        obs = obs.reshape(-1, self.eval_loader.num_goal)  # [num_envs x num_transitions_per_env, goal_dim]
+        rewards = self.eval_loader.rewards[:self.eval_loader.step].reshape(-1, 1)
+        return self.agent.infer_meta_from_obs_and_rewards(obs, rewards)
 
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")

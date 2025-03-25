@@ -15,7 +15,7 @@ class VideoRecorder:
             video_folder: str,
             video_interval: 100,
             video_length: int = 0,
-            video_prefix: str = "rl-video",
+            video_prefix: str = "video",
             video_fps: int = 30,
             wandb: bool = False,
             enabled: bool = False
@@ -36,7 +36,6 @@ class VideoRecorder:
         self.video_length = video_length
         self.video_fps = video_fps
         self.video_interval = video_interval
-        self.video_trigger = video_interval - video_length - 1
         self.enabled = enabled
         self.video_id = 0
         self.recording = False
@@ -45,7 +44,6 @@ class VideoRecorder:
     def start_video_recorder(self, iter_id):
         """Starts video recorder using :class:`video_recorder.VideoRecorder`."""
         self.close_video_recorder()
-
         self.video_id = iter_id
         self.capture_frame()
         self.recording = True
@@ -62,25 +60,24 @@ class VideoRecorder:
             if (iter_id - self.video_id) >= self.video_length:
                 self.close_video_recorder(iter_id)
 
-        elif iter_id % self.video_interval == self.video_trigger:
+        elif iter_id % self.video_interval == 0:
             self.start_video_recorder(iter_id)
 
     def close_video_recorder(self, iter_id=None):
         """Closes the video recorder if currently recording."""
         if self.recording and iter_id is not None:
-            video_name = f"{self.video_prefix}-step-{iter_id + 1}"
+            video_name = f"{self.video_prefix}-step-{self.video_id}"
 
             base_path = os.path.join(self.video_folder, video_name)
             video_path = base_path + ".mp4"
             clip = ImageSequenceClip(self.recorded_frames, fps=self.video_fps)
             clip.write_videofile(video_path, logger=None)
-            self.video_id = None
-
             if self.wandb:
                 # adding wandb step here will not work since the video is not logged immediately...
-                wandb.log({"video": wandb.Video(np.array(self.recorded_frames).transpose(0, 3, 1, 2),
-                                                fps=self.video_fps, format="mp4")}, step=iter_id + 1)
-                print('log video')
+                wandb.log({f"{self.video_prefix}": wandb.Video(np.array(self.recorded_frames).transpose(0, 3, 1, 2),
+                                                               fps=self.video_fps, format="mp4")}, step=self.video_id)
+            self.video_id = None
+
         self.recording = False
         self.recorded_frames = []
 
