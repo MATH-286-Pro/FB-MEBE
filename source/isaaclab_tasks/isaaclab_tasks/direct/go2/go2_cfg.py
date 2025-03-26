@@ -111,3 +111,4 @@ class Go2FlatEnvCfg(DirectRLEnvCfg):
     action_rate_reward_scale = -0.01
     feet_air_time_reward_scale = 1.0
     flat_orientation_reward_scale = -2.5
+    gait_symmetry_reward_scale = 2.0

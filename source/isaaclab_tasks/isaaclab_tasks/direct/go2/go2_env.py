@@ -23,6 +23,10 @@ class Go2Env(DirectRLEnv):
     def __init__(self, cfg: Go2FlatEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # reward selection
+        self.reward_type_list = ["trot", "pace"]  # use this to choose reward
+        self.reward_type = self.reward_type_list[0]
+
         # Joint position command (deviation from default joint positions)
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
         self._previous_actions = torch.zeros(
@@ -47,6 +51,7 @@ class Go2Env(DirectRLEnv):
                 "action_rate_l2",
                 "feet_air_time",
                 "flat_orientation_l2",
+                "gait_symmetry"
             ]
         }
         # Get specific body indices
@@ -82,16 +87,16 @@ class Go2Env(DirectRLEnv):
         obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b + (
-                            add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
+                        add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
                 self._robot.data.root_ang_vel_b + (
-                            add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
+                        add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
                 self._robot.data.projected_gravity_b + (
-                            add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
+                        add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
                 # self._commands,
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos + (
-                            add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
+                        add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
                 self._robot.data.joint_vel + (
-                            add_noise * torch.rand_like(self._robot.data.joint_vel) * 0.3 - 0.15),
+                        add_noise * torch.rand_like(self._robot.data.joint_vel) * 0.3 - 0.15),
                 self._actions,
             ],
             dim=-1,
@@ -136,6 +141,18 @@ class Go2Env(DirectRLEnv):
         # flat orientation
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
 
+        # Gait-specific rewards
+        if self.reward_type == "trot":
+            gait_symmetry = 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 0], first_contact[:, 2])).double() + 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 1], first_contact[:, 3])).double()
+        elif self.reward_type == "pace":
+            gait_symmetry = 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 0], first_contact[:, 1])).double() + 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 2], first_contact[:, 3])).double()
+        else:
+            raise ValueError(f"Unknown rewrad type: {self.reward_type}")
+
         rewards = {
             "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
             "track_ang_vel_z_exp": yaw_rate_error_mapped * self.cfg.yaw_rate_reward_scale * self.step_dt,
@@ -147,6 +164,7 @@ class Go2Env(DirectRLEnv):
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
             "feet_air_time": air_time * self.cfg.feet_air_time_reward_scale * self.step_dt,
             "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
+            "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
         }
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
         # Logging
@@ -159,7 +177,8 @@ class Go2Env(DirectRLEnv):
         died = torch.zeros_like(time_out)
         if self.use_termination:
             net_contact_forces = self._contact_sensor.data.net_forces_w_history
-            died = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1)
+            died = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0,
+                             dim=1)
         return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):
@@ -168,8 +187,8 @@ class Go2Env(DirectRLEnv):
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
         # if len(env_ids) == self.num_envs:
-            # Spread out the resets to avoid spikes in training when many environments reset at a similar time
-            # self.episode_length_buf[:] = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
+        # Spread out the resets to avoid spikes in training when many environments reset at a similar time
+        # self.episode_length_buf[:] = torch.randint_like(self.episode_length_buf, high=int(self.max_episode_length))
         self.episode_length_buf[env_ids] = 0
         self._actions[env_ids] = 0.0
         self._previous_actions[env_ids] = 0.0
