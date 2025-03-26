@@ -60,7 +60,7 @@ class VideoRecorder:
             if (iter_id - self.video_id) >= self.video_length:
                 self.close_video_recorder(iter_id)
 
-        elif iter_id % self.video_interval == 0:
+        else:
             self.start_video_recorder(iter_id)
 
     def close_video_recorder(self, iter_id=None):

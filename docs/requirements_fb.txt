@@ -19,7 +19,6 @@ setuptools>=65.5.1
 opencv-python
 hiplot
 termcolor
-gym>=0.21,<0.22
 patchelf
 
 # for the demo

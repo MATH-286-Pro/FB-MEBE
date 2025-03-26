@@ -319,7 +319,13 @@ class Workspace(BaseWorkspace[Config]):
     def __init__(self, cfg: Config, env_cfg) -> None:
         super().__init__(cfg, env_cfg)
         # self.train_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_interval=args_cli.video_interval, video_length=args_cli.video_length, wandb=self.cfg.use_wandb, enabled=args_cli.video)
-        self.eval_video_recorder = VideoRecorder(self.train_env, str(self.work_dir), video_prefix='eval_video', video_interval=1, video_length=int(self.train_env.max_episode_length - 1), wandb=self.cfg.use_wandb, enabled=args_cli.video)
+        self.eval_video_recorder = VideoRecorder(self.train_env, str(self.work_dir),
+                                                 video_prefix='eval_video',
+                                                 video_interval=1,
+                                                 video_length=int(self.train_env.max_episode_length - 1),
+                                                 wandb=self.cfg.use_wandb,
+                                                 enabled=args_cli.video,
+                                                 )
         if not self._checkpoint_filepath.exists():  # don't relay if there is a checkpoint
             if cfg.load_replay_buffer is not None:
                 self.load_checkpoint(cfg.load_replay_buffer, only=["replay_loader"])
@@ -392,8 +398,8 @@ class Workspace(BaseWorkspace[Config]):
                 action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
                 time_step = self.train_env.step(action)
                 self.eval_loader.add_transitions(time_step, eval_meta)
-                self.eval_step += 1
                 self.eval_video_recorder.step(self.global_step + self.eval_step)
+                self.eval_step += 1
         total_reward = self.eval_loader.rewards.sum().item()
         task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
         self.logger.log_metrics({"episode_reward": total_reward,
