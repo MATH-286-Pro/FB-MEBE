@@ -53,6 +53,7 @@ class Go2Env(DirectRLEnv):
         self._base_id, _ = self._contact_sensor.find_bodies("base")
         self._feet_ids, _ = self._contact_sensor.find_bodies(".*foot")
         self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*thigh")
+        self.use_termination = True
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -156,8 +157,7 @@ class Go2Env(DirectRLEnv):
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
         died = torch.zeros_like(time_out)
-        use_termination = False
-        if use_termination:
+        if self.use_termination:
             net_contact_forces = self._contact_sensor.data.net_forces_w_history
             died = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1)
         return died, time_out

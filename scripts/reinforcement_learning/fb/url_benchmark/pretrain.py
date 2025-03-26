@@ -204,7 +204,7 @@ class BaseWorkspace(tp.Generic[C]):
             exp_name = '_'.join([
                 cfg.experiment, cfg.agent.name, str(cfg.id)
             ])
-            wandb.init(project="fb_hw", group=cfg.experiment, name=exp_name,  # mode="disabled",
+            wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True), dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 32
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
@@ -384,7 +384,7 @@ class Workspace(BaseWorkspace[Config]):
         eval_meta = self.init_eval_meta()
         eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
         self.eval_loader.clear()
-
+        self.train_env.unwrapped.use_termination = False
         self.eval_step = 0
         time_step = self.train_env.reset()
         while self.eval_step < self.train_env.max_episode_length:
@@ -403,6 +403,7 @@ class Workspace(BaseWorkspace[Config]):
                                  },
                                 ty='eval')
         self.eval_video_recorder.close()
+        self.train_env.unwrapped.use_termination = True
 
     def collect_eval_data(self) -> None:
         # TODO set desired reward cfg
