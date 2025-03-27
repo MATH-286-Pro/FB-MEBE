@@ -24,7 +24,7 @@ class Go2Env(DirectRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
 
         # reward selection
-        self.reward_type_list = ["trot", "pace"]  # use this to choose reward
+        self.reward_type_list = ["default", "trot", "pace"]  # use this to choose reward
         self.reward_type = self.reward_type_list[0]
 
         # Joint position command (deviation from default joint positions)
@@ -124,8 +124,13 @@ class Go2Env(DirectRLEnv):
         z_vel_error = torch.square(self._robot.data.root_lin_vel_b[:, 2])
         # angular velocity x/y
         ang_vel_error = torch.sum(torch.square(self._robot.data.root_ang_vel_b[:, :2]), dim=1)
+
         # base height
-        base_height_error = torch.square(self._robot.data.root_pos_w[:, 2] - 0.30)
+        des_height = 0.4
+        if self.reward_type == "default":
+            des_height = 0.3
+        base_height_error = torch.square(self._robot.data.root_pos_w[:, 2] - des_height)
+
         # joint torques
         joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
         # joint acceleration
@@ -143,13 +148,25 @@ class Go2Env(DirectRLEnv):
 
         # Gait-specific rewards
         if self.reward_type == "trot":
-            gait_symmetry = 0.5 * torch.logical_not(
-                torch.logical_xor(first_contact[:, 0], first_contact[:, 2])).double() + 0.5 * torch.logical_not(
-                torch.logical_xor(first_contact[:, 1], first_contact[:, 3])).double()
+            gait_symmetry = (0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 0], first_contact[:, 3])).double()
+                             + 0.5 * torch.logical_not(
+                        torch.logical_xor(first_contact[:, 1], first_contact[:, 2])).double())
+            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double() +
+                              0.5 * torch.logical_xor(
+                        first_contact[:, 2], first_contact[:, 3]).double())
+            gait_symmetry = 0.5 * gait_symmetry + 0.5 * gait_symmetry2
         elif self.reward_type == "pace":
-            gait_symmetry = 0.5 * torch.logical_not(
-                torch.logical_xor(first_contact[:, 0], first_contact[:, 1])).double() + 0.5 * torch.logical_not(
-                torch.logical_xor(first_contact[:, 2], first_contact[:, 3])).double()
+            gait_symmetry = (0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 0], first_contact[:, 2])).double()
+                             + 0.5 * torch.logical_not(
+                        torch.logical_xor(first_contact[:, 1], first_contact[:, 3])).double())
+            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double() +
+                              0.5 * torch.logical_xor(
+                        first_contact[:, 2], first_contact[:, 3]).double())
+            gait_symmetry = 0.5 * gait_symmetry + 0.5 * gait_symmetry2
+        elif self.reward_type == "default":
+            gait_symmetry = torch.zeros_like(lin_vel_error_mapped)
         else:
             raise ValueError(f"Unknown rewrad type: {self.reward_type}")
 
