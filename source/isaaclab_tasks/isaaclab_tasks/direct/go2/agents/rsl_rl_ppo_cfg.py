@@ -15,6 +15,7 @@ class Go2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 50
     experiment_name = "go2_flat_direct"
     empirical_normalization = False
+    logger = "wandb"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[128, 128, 128],
