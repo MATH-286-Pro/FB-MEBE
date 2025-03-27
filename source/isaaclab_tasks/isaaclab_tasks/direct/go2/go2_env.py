@@ -101,14 +101,10 @@ class Go2Env(DirectRLEnv):
             ],
             dim=-1,
         )
-        goal = torch.cat([
-            self._robot.data.root_lin_vel_b + (
-                    add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
-            self._robot.data.root_ang_vel_b + (
-                    add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
-            self._robot.data.projected_gravity_b + (
-                    add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
-        ], dim=-1)
+        goal_dim = self._robot.data.root_lin_vel_b.shape[1] + self._robot.data.root_ang_vel_b.shape[1] +\
+            self._robot.data.projected_gravity_b.shape[1]
+        goal = obs[:, :goal_dim]  # TODO a bit hard coded!
+
         observations = {"policy": obs}
         observations["goal"] = goal
         return observations

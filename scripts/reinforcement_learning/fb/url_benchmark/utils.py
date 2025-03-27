@@ -11,10 +11,13 @@ import typing as tp
 
 import numpy as np
 import torch
+import yaml
 from torch import nn
 import torch.nn.functional as F
 from torch import distributions as pyd
 from torch.distributions.utils import _standard_normal
+from typing import Any
+
 try:
     from typing import Protocol
 except ImportError:
@@ -65,16 +68,16 @@ def chain(*iterables: tp.Iterable[X]) -> tp.Iterator[X]:  # TODO remove
 
 def soft_update_params(net, target_net, tau) -> None:
     for param, target_param in zip(net.parameters(), target_net.parameters()):
-        target_param.data.copy_(tau * param.data +
-                                (1 - tau) * target_param.data)
+        target_param.data.copy_(tau * param.data
+                                + (1 - tau) * target_param.data)
 
 
-# update target network to the MEAN of the ensemble network       
+# update target network to the MEAN of the ensemble network
 def soft_update_params_mean(net, target_net, tau) -> None:
     for param, target_param in zip(net.parameters(), target_net.parameters()):
         soft_mean_target = param.data.mean(0)
-        target_param.data.copy_(tau * soft_mean_target +
-                                (1 - tau) * target_param.data)
+        target_param.data.copy_(tau * soft_mean_target
+                                + (1 - tau) * target_param.data)
 
 
 def hard_update_params(net, target_net) -> None:
@@ -263,108 +266,6 @@ def schedule(schdl, step) -> float:
     raise NotImplementedError(schdl)
 
 
-class RandomShiftsAug(nn.Module):
-    def __init__(self, pad) -> None:
-        super().__init__()
-        self.pad = pad
-
-    def forward(self, x) -> torch.Tensor:
-        x = x.float()
-        n, _, h, w = x.size()
-        assert h == w
-        padding = tuple([self.pad] * 4)
-        x = F.pad(x, padding, 'replicate')
-        eps = 1.0 / (h + 2 * self.pad)
-        arange = torch.linspace(-1.0 + eps,
-                                1.0 - eps,
-                                h + 2 * self.pad,
-                                device=x.device,
-                                dtype=x.dtype)[:h]
-        arange = arange.unsqueeze(0).repeat(h, 1).unsqueeze(2)
-        base_grid = torch.cat([arange, arange.transpose(1, 0)], dim=2)
-        base_grid = base_grid.unsqueeze(0).repeat(n, 1, 1, 1)
-
-        shift = torch.randint(0,
-                              2 * self.pad + 1,
-                              size=(n, 1, 1, 2),
-                              device=x.device,
-                              dtype=x.dtype)
-        shift *= 2.0 / (h + 2 * self.pad)
-
-        grid = base_grid + shift
-        return F.grid_sample(x,
-                             grid,
-                             padding_mode='zeros',
-                             align_corners=False)
-
-
-class RMS:
-    """running mean and std """
-
-    def __init__(self, device, epsilon=1e-4, shape=(1,)) -> None:
-        self.M = torch.zeros(shape).to(device)
-        self.S = torch.ones(shape).to(device)
-        self.n = epsilon
-
-    def __call__(self, x):
-        bs = x.size(0)
-        delta = torch.mean(x, dim=0) - self.M
-        new_M = self.M + delta * bs / (self.n + bs)
-        new_S = (self.S * self.n + torch.var(x, dim=0) * bs +
-                 torch.square(delta) * self.n * bs /
-                 (self.n + bs)) / (self.n + bs)
-
-        self.M = new_M
-        self.S = new_S
-        self.n += bs
-
-        return self.M, self.S
-
-
-class PBE:
-    """particle-based entropy based on knn normalized by running mean """
-
-    def __init__(self, rms, knn_clip, knn_k, knn_avg, knn_rms, device) -> None:
-        self.rms = rms
-        self.knn_rms = knn_rms
-        self.knn_k = knn_k
-        self.knn_avg = knn_avg
-        self.knn_clip = knn_clip
-        self.device = device
-
-    def __call__(self, rep):
-        source = target = rep
-        b1, b2 = source.size(0), target.size(0)
-        # (b1, 1, c) - (1, b2, c) -> (b1, 1, c) - (1, b2, c) -> (b1, b2, c) -> (b1, b2)
-        sim_matrix = torch.norm(source[:, None, :].view(b1, 1, -1) -
-                                target[None, :, :].view(1, b2, -1),
-                                dim=-1,
-                                p=2)
-        reward, _ = sim_matrix.topk(self.knn_k,
-                                    dim=1,
-                                    largest=False,
-                                    sorted=True)  # (b1, k)
-        if not self.knn_avg:  # only keep k-th nearest neighbor
-            reward = reward[:, -1]
-            reward = reward.reshape(-1, 1)  # (b1, 1)
-            reward /= self.rms(reward)[0] if self.knn_rms else 1.0
-            reward = torch.maximum(
-                reward - self.knn_clip,
-                torch.zeros_like(reward).to(self.device)
-            ) if self.knn_clip >= 0.0 else reward  # (b1, 1)
-        else:  # average over all k nearest neighbors
-            reward = reward.reshape(-1, 1)  # (b1 * k, 1)
-            reward /= self.rms(reward)[0] if self.knn_rms else 1.0
-            reward = torch.maximum(
-                reward - self.knn_clip,
-                torch.zeros_like(reward).to(
-                    self.device)) if self.knn_clip >= 0.0 else reward
-            reward = reward.reshape((b1, self.knn_k))  # (b1, k)
-            reward = reward.mean(dim=1, keepdim=True)  # (b1, 1)
-        reward = torch.log(reward + 1.0)
-        return reward
-
-
 class FloatStats:
 
     def __init__(self) -> None:
@@ -379,3 +280,85 @@ class FloatStats:
         self.count += 1
         self.mean = (self.count - 1) / self.count * self.mean + 1 / self.count * value
         return self
+
+
+import os
+from isaaclab.utils.string import callable_to_string
+
+
+def class_to_dict(obj: object, ignore: list = []) -> dict[str, Any]:
+    """Convert an object into dictionary recursively.
+
+    Note:
+        Ignores all names starting with "__" (i.e. built-in methods).
+
+    Args:
+        obj: An instance of a class to convert.
+
+    Raises:
+        ValueError: When input argument is not an object.
+
+    Returns:
+        Converted dictionary mapping.
+    """
+    # check that input data is class instance
+    if not hasattr(obj, "__class__"):
+        raise ValueError(f"Expected a class instance. Received: {type(obj)}.")
+    # convert object to dictionary
+    if isinstance(obj, dict):
+        obj_dict = obj
+    elif isinstance(obj, torch.Tensor):
+        # We have to treat torch tensors specially because `torch.tensor.__dict__` returns an empty
+        # dict, which would mean that a torch.tensor would be stored as an empty dict. Instead we
+        # want to store it directly as the tensor.
+        return obj
+    elif hasattr(obj, "__dict__"):
+        obj_dict = obj.__dict__
+    else:
+        return obj
+
+    # convert to dictionary
+    data = dict()
+    for key, value in obj_dict.items():
+        # disregard builtin attributes
+        if key.startswith("__"):
+            continue
+        if key in ignore:
+            continue
+        # check if attribute is callable -- function
+        if callable(value):
+            data[key] = callable_to_string(value)
+        # check if attribute is a dictionary
+        elif hasattr(value, "__dict__") or isinstance(value, dict):
+            data[key] = class_to_dict(value)
+        # check if attribute is a list or tuple
+        elif isinstance(value, (list, tuple)):
+            data[key] = type(value)([class_to_dict(v) for v in value])
+        else:
+            data[key] = value
+    return data
+
+
+def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
+    """Saves data into a YAML file safely.
+
+    Note:
+        The function creates any missing directory along the file's path.
+
+    Args:
+        filename: The path to save the file at.
+        data: The data to save either a dictionary or class object.
+        sort_keys: Whether to sort the keys in the output file. Defaults to False.
+    """
+    # check ending
+    if not filename.endswith("yaml"):
+        filename += ".yaml"
+    # create directory
+    if not os.path.exists(os.path.dirname(filename)):
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+    # convert data into dictionary
+    if not isinstance(data, dict):
+        data = class_to_dict(data)
+    # save data
+    with open(filename, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=sort_keys)

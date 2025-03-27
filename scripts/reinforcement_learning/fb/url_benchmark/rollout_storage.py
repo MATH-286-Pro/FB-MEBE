@@ -104,9 +104,10 @@ class RolloutStorage:
         actions = self.actions.flatten(0, 1)
         rewards = self.rewards.flatten(0, 1)
         indices = torch.arange(0, num_mini_batches * mini_batch_size, requires_grad=False, device=self.device).view(-1, 1)
-        # remove from indices the indices of dones obs and the  ones between diff environments
+        # remove from indices the indices of dones obs
         indices = indices[dones == 0]
-        indices = indices[indices % (self.num_transitions_per_env - 1) != 0]
+        # remove indices between diff environments --> this is not needed since I am using next_observation tensor!
+        # indices = indices[indices % (self.num_transitions_per_env - 1) != 0]
 
         # permute
         p = torch.randperm(len(indices))

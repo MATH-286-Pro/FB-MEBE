@@ -42,7 +42,7 @@ simulation_app = app_launcher.app
 import gymnasium as gym
 import os
 import torch
-
+import yaml
 
 from isaaclab.envs import (
     DirectRLEnvCfg,
@@ -88,6 +88,7 @@ from url_benchmark.logger import Logger
 from url_benchmark.rollout_storage import RolloutStorage
 from url_benchmark.video_record import VideoRecorder
 from url_benchmark import agent as agents
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 # torch.backends.cudnn.benchmark = True
@@ -97,6 +98,8 @@ logger = logging.getLogger(__name__)
 def arr_to_str(arr: np.array) -> str:
     return "[" + ",".join(f"{x:.1f}" for x in arr) + "]"
 
+
+IGNORE_CONFIG = ['viewer', 'sim', 'events', 'contact_sensor', 'terrain']
 # # # Config # # #
 
 
@@ -170,8 +173,14 @@ C = tp.TypeVar("C", bound=Config)
 
 class BaseWorkspace(tp.Generic[C]):
     def __init__(self, cfg: C, env_cfg) -> None:
-        self.work_dir = Path.cwd() if len(cfg.working_dir) == 0 else Path(cfg.working_dir)
-        self.model_dir = self.work_dir if 'cluster' not in str(self.work_dir) else Path(str(self.work_dir).replace('home', 'scratch'))
+        self.hydra_dir = Path.cwd() if len(cfg.working_dir) == 0 else Path(cfg.working_dir)
+        date = datetime.now().strftime("%m-%d_%H-%M")
+        self.work_dir = self.hydra_dir / f"{args_cli.task}/{date}"
+        os.makedirs(self.work_dir, exist_ok=True)
+        if 'cluster' not in str(self.work_dir):
+            self.model_dir = self.work_dir
+        else:
+            raise NotImplementedError  # Path(str(self.work_dir).replace('home', 'scratch'))
         print(f'Workspace: {self.work_dir}')
         print(f'Running code in : {Path(__file__).parent.resolve().absolute()}')
         logger.info(f'Workspace: {self.work_dir}')
@@ -199,13 +208,21 @@ class BaseWorkspace(tp.Generic[C]):
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
-
+        
+        # save (reduced) agent config and env_cfg
+        if not isinstance(env_cfg, dict):
+            save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
+        fb_cfg = omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+        final_cfg = dict(save_env_cfg)
+        final_cfg.update(dict(fb_cfg))
+        with open(f"{self.work_dir}/config.yaml", "w") as f:
+            yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
         if cfg.use_wandb:
             exp_name = '_'.join([
-                cfg.experiment, cfg.agent.name, str(cfg.id)
+                cfg.agent.name, args_cli.task, cfg.experiment
             ])
             wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
-                       config=omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True), dir=self.work_dir)  # type: ignore
+                       config=final_cfg, dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 32
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
                                             num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
