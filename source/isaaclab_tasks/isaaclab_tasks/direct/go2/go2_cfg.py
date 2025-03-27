@@ -53,7 +53,7 @@ class Go2FlatEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 5.0
     decimation = 4
-    action_scale = 0.25
+    action_scale = 0.5
     action_space = 12
     observation_space = 45
     goal_space = 9
