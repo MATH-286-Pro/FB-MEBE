@@ -17,10 +17,11 @@ parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
 parser.add_argument("--video_interval", type=int, default=2000, help="Interval between video recordings (in steps).")
-parser.add_argument("--num_envs", type=int, default=128, help="Number of environments to simulate.")
+parser.add_argument("--num_envs", type=int, default=100, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+
 # # append RSL-RL cli arguments
 # cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -126,7 +127,7 @@ class Config:
     final_tests: int = 10
     # checkpoint # num episode * length of episode
     snapshot_at: tp.Tuple[int, ...] = (0, 250, 500, 1000, 1500, 2000)
-    checkpoint_every: int = 10000
+    checkpoint_every: int = 100000
     load_model: tp.Optional[str] = None
     # training
     num_seed_steps: int = 4000
@@ -208,7 +209,7 @@ class BaseWorkspace(tp.Generic[C]):
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
-        
+
         # save (reduced) agent config and env_cfg
         if not isinstance(env_cfg, dict):
             save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
@@ -224,12 +225,6 @@ class BaseWorkspace(tp.Generic[C]):
             wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=final_cfg, dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 32
-        self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
-                                            num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
-                                            num_goal=int(self.train_env.goal_spec.shape[0]),  # type: ignore
-                                            num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
-                                            num_z=cfg.agent.z_dim,
-                                            device=str(self.device))
         # TODO episode length
         self.eval_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.train_env.max_episode_length, discount=cfg.discount,
                                           num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
@@ -291,7 +286,6 @@ class BaseWorkspace(tp.Generic[C]):
         assert all(x in self._CHECKPOINTED_KEYS for x in exclude)
         fp = Path(fp)
         fp.parent.mkdir(exist_ok=True, parents=True)
-        assert isinstance(self.replay_loader, RolloutStorage), "Is this buffer designed for checkpointing?"
         # this is just a dumb security check to not forget about it
         payload = {k: self.__dict__[k] for k in self._CHECKPOINTED_KEYS if k not in exclude}
         with fp.open('wb') as f:
@@ -322,6 +316,7 @@ class BaseWorkspace(tp.Generic[C]):
         for x in exclude:
             payload.pop(x, None)
         for name, val in payload.items():
+            print(name,val)
             logger.info("Reloading %s from %s", name, fp)
             if name == "agent":
                 self.agent.init_from(val)
@@ -343,85 +338,35 @@ class Workspace(BaseWorkspace[Config]):
                                                  wandb=self.cfg.use_wandb,
                                                  enabled=args_cli.video,
                                                  )
-
-    def train(self) -> None:
-        # predicates
-        train_until_step = utils.Until(self.cfg.num_train_steps)
-        seed_until_step = utils.Until(self.num_transitions_per_env)
-        eval_every_step = utils.Every(self.cfg.eval_every_steps)
-        update_every_step = utils.Every(self.num_transitions_per_env)
-        log_every = self.num_transitions_per_env * 10
-        log_every_step = utils.Every(log_every)
-
-        time_step = self.train_env.reset()
-        meta = self.agent.init_meta(time_step.observation)
-        metrics = None
-
-        while train_until_step(self.global_step):
-            # try to update the agent: only if we collected enough random data (seed until step steps)
-            # and if we collected update_every_step steps
-            if not seed_until_step(self.global_step) and update_every_step(self.global_step):
-                # Num of updates is managed by update function now!
-                metrics = self.agent.update(self.replay_loader, self.global_step)
-                if log_every_step(self.global_step):
-                    metrics['step'] = self.global_step
-                    self.logger.log_metrics(metrics, ty='train')
-                    self.logger.dump(step=self.global_step, ty='train')
-
-            meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
-                                          obs=time_step.observation)
-            # sample action
-            with torch.no_grad():  # , utils.eval_mode(self.agent):
-                action = self.agent.act(time_step.observation,
-                                        meta,
-                                        self.global_step,
-                                        eval_mode=False)
-            # take env step
-            time_step = self.train_env.step(action)
-            self.replay_loader.add_transitions(time_step, meta)
-
-            # eval
-            if eval_every_step(self.global_step):
-                t = time.time()
-                self.eval()
-                eval_time = time.time() - t
-                self.logger.log_metrics({'total_time': eval_time}, ty='eval')
-                self.logger.dump(self.global_step)
-                # Reset everything:
-                self.replay_loader.clear()
-                time_step = self.train_env.reset()
-
-            # save checkpoint to reload
-            if self.global_step > 100 and not self.global_step % self.cfg.checkpoint_every:
-                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_step{self.global_step}.pt'), exclude=["replay_loader"])
-            self.global_step += 1
-
-        self.save_checkpoint(self._checkpoint_filepath, exclude=["replay_loader"])  # make sure we save the final checkpoint
-        self.train_env.close()
-
+    
     def eval(self) -> None:
         self.collect_eval_data()
         eval_meta = self.init_eval_meta()
         eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
         self.eval_loader.clear()
         self.train_env.unwrapped.use_termination = False
-        self.eval_step = 0
-        time_step = self.train_env.reset()
-        while self.eval_step < self.train_env.max_episode_length:
-            with torch.no_grad():
-                action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
-                time_step = self.train_env.step(action)
-                self.eval_loader.add_transitions(time_step, eval_meta)
-                self.eval_video_recorder.step(self.global_step + self.eval_step)
-                self.eval_step += 1
-        total_reward = self.eval_loader.rewards.sum().item()
-        task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
-        self.logger.log_metrics({"episode_reward": total_reward,
-                                 f"episode_reward{task}": total_reward,
-                                 "episode_length": self.eval_step,
-                                 "step": self.global_step,
-                                 },
-                                ty='eval')
+        for i in range(100):
+            print('eval episode', i)
+            self.eval_step = 0
+            self.eval_loader.clear()
+
+            time_step = self.train_env.reset()
+
+            while self.eval_step < self.train_env.max_episode_length:
+                with torch.no_grad():
+                    action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
+                    time_step = self.train_env.step(action)
+                    self.eval_loader.add_transitions(time_step, eval_meta)
+                    self.eval_video_recorder.step(self.global_step + self.eval_step)
+                    self.eval_step += 1
+            total_reward = self.eval_loader.rewards.sum().item()
+            task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
+            self.logger.log_metrics({"episode_reward": total_reward,
+                                    f"episode_reward{task}": total_reward,
+                                     "episode_length": self.eval_step,
+                                     "step": self.global_step,
+                                     },
+                                    ty='eval')
         self.eval_video_recorder.close()
         self.train_env.unwrapped.use_termination = True
 
@@ -432,6 +377,7 @@ class Workspace(BaseWorkspace[Config]):
         meta = self.agent.init_meta(time_step.observation)
         assert self.cfg.agent.num_inference_steps <= self.train_env.num_envs * self.eval_loader.num_transitions_per_env
         while len(self.eval_loader) < self.cfg.agent.num_inference_steps:
+            print('collecting data')
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf, obs=time_step.observation)  # TODO: update more often to have more diversity of zs
             with torch.no_grad():  # , utils.eval_mode(self.agent):
                 action = self.agent.act(time_step.observation, meta, self.global_step, eval_mode=False)
@@ -450,7 +396,7 @@ def main(cfg: omgcf.DictConfig) -> None:
     env_cfg, _ = register_task_to_hydra(args_cli.task, 'rsl_rl_cfg_entry_point')
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
-    workspace.train()
+    workspace.eval()
 
 
 if __name__ == '__main__':
