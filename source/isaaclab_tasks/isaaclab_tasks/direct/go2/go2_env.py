@@ -25,7 +25,7 @@ class Go2Env(DirectRLEnv):
 
         # reward selection
         self.reward_type_list = ["default", "trot", "pace"]  # use this to choose reward
-        self.reward_type = self.reward_type_list[0]
+        self.reward_type = self.reward_type_list[1]
 
         # Joint position command (deviation from default joint positions)
         self._actions = torch.zeros(self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device)
