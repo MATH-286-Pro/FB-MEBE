@@ -275,13 +275,6 @@ class BaseWorkspace(tp.Generic[C]):
 
         return env
 
-    def _make_custom_reward(self, seed: int) -> tp.Optional[_goals.BaseReward]:
-        """Creates a custom reward function if provided in configuration
-        else returns None
-        """
-        if self.cfg.custom_reward is None:
-            return None
-        return _goals.get_reward_function(self.cfg.custom_reward, seed)
 
     _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
 
@@ -377,7 +370,7 @@ class Workspace(BaseWorkspace[Config]):
                                         self.global_step,
                                         eval_mode=False)
             # take env step
-            time_step = self.train_env.step(action)
+            time_step, _ = self.train_env.step(action)
             self.replay_loader.add_transitions(time_step, meta)
 
             # eval
@@ -410,11 +403,11 @@ class Workspace(BaseWorkspace[Config]):
         while self.eval_step < self.train_env.max_episode_length:
             with torch.no_grad():
                 action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
-                time_step = self.train_env.step(action)
+                time_step, extras = self.train_env.step(action)
                 self.eval_loader.add_transitions(time_step, eval_meta)
                 self.eval_video_recorder.step(self.global_step + self.eval_step)
                 self.eval_step += 1
-        total_reward = self.eval_loader.rewards.sum().item()
+        total_reward = self.eval_loader.rewards.sum(axis=0).mean().item()
         task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
         self.logger.log_metrics({"episode_reward": total_reward,
                                  f"episode_reward{task}": total_reward,
@@ -422,6 +415,7 @@ class Workspace(BaseWorkspace[Config]):
                                  "step": self.global_step,
                                  },
                                 ty='eval')
+        self.logger.log_metrics(extras['log'], ty='eval')
         self.eval_video_recorder.close()
         self.train_env.unwrapped.use_termination = True
 
@@ -435,7 +429,7 @@ class Workspace(BaseWorkspace[Config]):
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf, obs=time_step.observation)  # TODO: update more often to have more diversity of zs
             with torch.no_grad():  # , utils.eval_mode(self.agent):
                 action = self.agent.act(time_step.observation, meta, self.global_step, eval_mode=False)
-            time_step = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
+            time_step, _ = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
             self.eval_loader.add_transitions(time_step, meta)
 
     def init_eval_meta(self):  # -> MetaDict:

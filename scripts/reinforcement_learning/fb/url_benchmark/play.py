@@ -270,14 +270,6 @@ class BaseWorkspace(tp.Generic[C]):
 
         return env
 
-    def _make_custom_reward(self, seed: int) -> tp.Optional[_goals.BaseReward]:
-        """Creates a custom reward function if provided in configuration
-        else returns None
-        """
-        if self.cfg.custom_reward is None:
-            return None
-        return _goals.get_reward_function(self.cfg.custom_reward, seed)
-
     _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
 
     def save_checkpoint(self, fp: tp.Union[Path, str], exclude: tp.Sequence[str] = ()) -> None:
@@ -316,7 +308,7 @@ class BaseWorkspace(tp.Generic[C]):
         for x in exclude:
             payload.pop(x, None)
         for name, val in payload.items():
-            print(name,val)
+            print(name, val)
             logger.info("Reloading %s from %s", name, fp)
             if name == "agent":
                 self.agent.init_from(val)
@@ -338,8 +330,10 @@ class Workspace(BaseWorkspace[Config]):
                                                  wandb=self.cfg.use_wandb,
                                                  enabled=args_cli.video,
                                                  )
-    
+
     def eval(self) -> None:
+        self.set_task()
+
         self.collect_eval_data()
         eval_meta = self.init_eval_meta()
         eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
@@ -355,34 +349,65 @@ class Workspace(BaseWorkspace[Config]):
             while self.eval_step < self.train_env.max_episode_length:
                 with torch.no_grad():
                     action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
-                    time_step = self.train_env.step(action)
+                    time_step, extras = self.train_env.step(action)
                     self.eval_loader.add_transitions(time_step, eval_meta)
                     self.eval_video_recorder.step(self.global_step + self.eval_step)
                     self.eval_step += 1
-            total_reward = self.eval_loader.rewards.sum().item()
+            total_reward = self.eval_loader.rewards.sum(axis=0).mean().item()
+            breakpoint()
             task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
+            print(f'Total reward. {task}:', total_reward)
             self.logger.log_metrics({"episode_reward": total_reward,
                                     f"episode_reward{task}": total_reward,
                                      "episode_length": self.eval_step,
                                      "step": self.global_step,
                                      },
                                     ty='eval')
+            self.logger.log_metrics(extras['log'], ty='eval')
         self.eval_video_recorder.close()
         self.train_env.unwrapped.use_termination = True
+        self.reset_task()
+
+    def set_task(self) -> None:
+        print('\nSetting task rewards ....\n ')
+        self.default_desired_vel = self.train_env.unwrapped.desired_velocity
+        self.default_pace = self.train_env.unwrapped.reward_type
+        self.train_env.unwrapped.desired_velocity = torch.tensor([.5, 0.0, 0.0], device=self.device)
+        self.train_env.unwrapped.reward_type = "trot"
+        print('Changed reward to: desired_velocity ', self.train_env.unwrapped.desired_velocity,
+              ' pace:', self.train_env.unwrapped.reward_type)
+
+        print('\nSetting uncertainty....\n')
+        self.default_uncertainty_ = self.cfg.uncertainty
+        self.cfg.uncertainty, self.agent.cfg.uncertainty = False, False
+        print('\nSet uncertainty to ', self.agent.cfg.uncertainty)
+        
+        print('\nSetting z update step....\n')
+        self.default_z_every_step = self.agent.cfg.update_z_every_step
+        self.agent.cfg.update_z_every_step = 10
+        print('\nSet z update step to ', self.agent.cfg.update_z_every_step)
+
+    def reset_task(self) -> None:
+        self.train_env.unwrapped.desired_velocity = self.default_desired_vel
+        self.train_env.unwrapped.reward_type = self.default_pace
+        self.cfg.uncertainty, self.agent.cfg.uncertainty = self.default_uncertainty_, self.default_uncertainty_
+        self.agent.cfg.update_z_every_step = self.default_z_every_step
 
     def collect_eval_data(self) -> None:
-        # TODO set desired reward cfg
         self.eval_loader.clear()
         time_step = self.train_env.reset()
         meta = self.agent.init_meta(time_step.observation)
         assert self.cfg.agent.num_inference_steps <= self.train_env.num_envs * self.eval_loader.num_transitions_per_env
+        print('Collecting exploratory data...\n')
+
         while len(self.eval_loader) < self.cfg.agent.num_inference_steps:
-            print('collecting data')
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf, obs=time_step.observation)  # TODO: update more often to have more diversity of zs
             with torch.no_grad():  # , utils.eval_mode(self.agent):
                 action = self.agent.act(time_step.observation, meta, self.global_step, eval_mode=False)
-            time_step = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
+            time_step, _ = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
             self.eval_loader.add_transitions(time_step, meta)
+
+        print('Done collecting data \n')
 
     def init_eval_meta(self):  # -> MetaDict:
         obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim

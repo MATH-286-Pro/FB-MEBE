@@ -247,7 +247,7 @@ class FBDDPGAgent:
         obs: torch.Tensor,
     ) -> MetaDict:
         # substitute old zs for the new ones if it's time to update
-        if len(env_step % self.cfg.update_z_every_step == 0) > 0 :
+        if (env_step % self.cfg.update_z_every_step == 0).any():
             new_meta = self.init_meta(obs) if not self.cfg.uncertainty else self.init_curious_meta(obs)
             meta['z'][env_step % self.cfg.update_z_every_step == 0] = new_meta['z'][env_step % self.cfg.update_z_every_step == 0]
             meta['updated'][env_step % self.cfg.update_z_every_step == 0] = new_meta['updated'][env_step % self.cfg.update_z_every_step == 0]

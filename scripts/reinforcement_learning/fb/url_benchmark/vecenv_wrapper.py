@@ -236,7 +236,7 @@ class FBVecEnvWrapper(VecEnv):
         # return observations
         return time_step
 
-    def step(self, actions: torch.Tensor) -> ExtendedTimeStep:
+    def step(self, actions: torch.Tensor) -> tuple[ExtendedTimeStep, dict]:
         # record step information
         actions = torch.tensor(actions, device=self.device)
         next_obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
@@ -264,7 +264,7 @@ class FBVecEnvWrapper(VecEnv):
                               )
         # Update current observation
         self.obs_dict = next_obs_dict
-        return ts
+        return ts, extras
 
     def close(self):  # noqa: D102
         return self.env.close()
