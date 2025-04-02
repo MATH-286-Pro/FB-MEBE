@@ -351,15 +351,6 @@ class Workspace(BaseWorkspace[Config]):
         metrics = None
 
         while train_until_step(self.global_step):
-            # try to update the agent: only if we collected enough random data (seed until step steps)
-            # and if we collected update_every_step steps
-            if not seed_until_step(self.global_step) and update_every_step(self.global_step):
-                # Num of updates is managed by update function now!
-                metrics = self.agent.update(self.replay_loader, self.global_step)
-                if log_every_step(self.global_step):
-                    metrics['step'] = self.global_step
-                    self.logger.log_metrics(metrics, ty='train')
-                    self.logger.dump(step=self.global_step, ty='train')
 
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
                                           obs=time_step.observation)
@@ -372,6 +363,16 @@ class Workspace(BaseWorkspace[Config]):
             # take env step
             time_step, _ = self.train_env.step(action)
             self.replay_loader.add_transitions(time_step, meta)
+
+            # try to update the agent: only if we collected enough random data (seed until step steps)
+            # and if we collected update_every_step steps
+            if not seed_until_step(self.global_step) and update_every_step(self.global_step):
+                # Num of updates is managed by update function now!
+                metrics = self.agent.update(self.replay_loader, self.global_step)
+                if log_every_step(self.global_step):
+                    metrics['step'] = self.global_step
+                    self.logger.log_metrics(metrics, ty='train')
+                    self.logger.dump(step=self.global_step, ty='train')
 
             # eval
             if eval_every_step(self.global_step):
@@ -432,7 +433,7 @@ class Workspace(BaseWorkspace[Config]):
             time_step, _ = self.train_env.step(action)  # TODO time step rewards should be obtained with desired reward fct
             self.eval_loader.add_transitions(time_step, meta)
 
-    def init_eval_meta(self):  # -> MetaDict:
+    def init_eval_meta(self):
         obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim
         obs = obs.reshape(-1, self.eval_loader.num_goal)  # [num_envs x num_transitions_per_env, goal_dim]
         rewards = self.eval_loader.rewards[:self.eval_loader.step].reshape(-1, 1)

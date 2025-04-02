@@ -409,7 +409,7 @@ class Workspace(BaseWorkspace[Config]):
 
         print('Done collecting data \n')
 
-    def init_eval_meta(self):  # -> MetaDict:
+    def init_eval_meta(self):
         obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim
         obs = obs.reshape(-1, self.eval_loader.num_goal)  # [num_envs x num_transitions_per_env, goal_dim]
         rewards = self.eval_loader.rewards[:self.eval_loader.step].reshape(-1, 1)

@@ -362,3 +362,13 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
     # save data
     with open(filename, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=sort_keys)
+
+
+from collections import defaultdict
+
+
+def update_merged_dict(merged: defaultdict, new_output: dict) -> defaultdict:
+    """Updates merged dictionary by concatenating new tensors iteratively."""
+    for key, value in new_output.items():
+        merged[key] = torch.cat((merged[key], value), dim=0) if key in merged else value.clone()
+    return merged

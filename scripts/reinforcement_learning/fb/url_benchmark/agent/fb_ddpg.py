@@ -25,8 +25,6 @@ from url_benchmark.logger import AverageMeter
 
 logger = logging.getLogger(__name__)
 
-MetaDict = tp.Mapping[str, np.ndarray]
-
 
 @dataclasses.dataclass
 class FBDDPGAgentConfig:
@@ -154,7 +152,7 @@ class FBDDPGAgent:
             if isinstance(val, torch.optim.Optimizer):
                 val.load_state_dict(copy.deepcopy(getattr(other, key).state_dict()))
 
-    def get_goal_meta(self, goal_array: np.ndarray) -> MetaDict:
+    def get_goal_meta(self, goal_array: np.ndarray) -> dict:
         desired_goal = torch.tensor(goal_array).unsqueeze(0).to(self.cfg.device)
         with torch.no_grad():
             z = self.backward_net(desired_goal)
@@ -166,10 +164,10 @@ class FBDDPGAgent:
         meta['z'] = z
         return meta
 
-    def infer_meta(self, replay_loader: RolloutStorage) -> MetaDict:
+    def infer_meta(self, replay_loader: RolloutStorage) -> dict:
         obs_list, reward_list = [], []
         batch_size = 0
-        generator = replay_loader.mini_batch_generator(num_mini_batches=4, num_epochs=1)  # TODO update numbers?
+        generator = replay_loader.mini_batch_generator(mini_batch_size=256, num_epochs=1)  # TODO update numbers?
         for batch in generator:
             obs_list.append(batch.next_goal)
             reward_list.append(batch.reward)
@@ -180,7 +178,7 @@ class FBDDPGAgent:
         obs, reward = obs[:self.cfg.num_inference_steps], reward[:self.cfg.num_inference_steps]
         return self.infer_meta_from_obs_and_rewards(obs, reward)
 
-    def infer_meta_from_obs_and_rewards(self, obs: torch.Tensor, reward: torch.Tensor) -> MetaDict:
+    def infer_meta_from_obs_and_rewards(self, obs: torch.Tensor, reward: torch.Tensor) -> dict:
         with torch.no_grad():
             B = self.backward_net(obs)
         z = torch.matmul(reward.T, B) / reward.shape[0]
@@ -200,9 +198,18 @@ class FBDDPGAgent:
             z = np.sqrt(self.cfg.z_dim) * uniform_rdv * gaussian_rdv
         return z
 
-    def init_meta(self, obs: torch.Tensor) -> MetaDict:
+    def init_meta(self, obs: torch.Tensor) -> dict:
         if self.cfg.uncertainty:
-            return self.init_curious_meta(obs,)
+            split_size = 200
+            if obs.shape[0] > split_size:
+                meta = defaultdict(torch.Tensor)
+                for obs_chunk in obs.split(split_size):
+                    partial_meta = self.init_curious_meta(obs_chunk)
+                    meta = utils.update_merged_dict(meta, partial_meta)
+
+            else:
+                meta = self.init_curious_meta(obs,)
+            return meta
         else:
             z = self.sample_z(size=obs.shape[0])
             z = z.squeeze().to(self.cfg.device)
@@ -211,24 +218,24 @@ class FBDDPGAgent:
         meta['updated'] = torch.tensor([[True]] * obs.shape[0], device=self.cfg.device)
         return meta
 
-    def init_curious_meta(self, obs: torch.Tensor) -> MetaDict:
+    def init_curious_meta(self, obs: torch.Tensor) -> dict:
         meta = OrderedDict()
         num_obs, _ = obs.shape
         if self.cfg.sampling:
             with torch.no_grad():
-                num_zs = self.cfg.num_z_samples * obs.shape[0]
-                z = self.sample_z(size=num_zs, device=self.cfg.device)  # num_zs x z_dim
-                obs = obs.repeat_interleave(self.cfg.num_z_samples, 0)  # each obs repeated num_z_samples times x obs_dim
-                acts = self.actor(obs, z, std=1.).mean  # num_zs x act_dim take the mean, although querying with std 0 anyways
-                F1, F2 = self.forward_net((obs, z, acts))  # ensemble_size x num_zs x z_dim
-                Q1, Q2 = [torch.einsum('esd, ...sd -> es', Fi, z) for Fi in [F1, F2]]  # ensemble_size x num_zs
-            epistemic_std1, epistemic_std2 = Q1.std(dim=0), Q2.std(dim=0)  # num_zs # TODO only using epistemic_std1
-            epistemic_std1 = epistemic_std1.reshape(num_obs, self.cfg.num_z_samples)  # reshape
-            idxs = torch.argmax(epistemic_std1, dim=-1)
-            z = z.reshape(num_obs, self.cfg.num_z_samples, -1)
-            meta['z'] = z[torch.arange(z.shape[0]), idxs]  # take the z with the highest epistemic uncertainty
-            meta['disagr'] = epistemic_std1.std().item()
-            meta['updated'] = torch.tensor([[True]] * num_obs, device=self.cfg.device)
+                num_zs = self.cfg.num_z_samples * obs.shape[0]  # call this M
+                z = self.sample_z(size=num_zs, device=self.cfg.device)  # M x z_dim
+                obs = obs.repeat_interleave(self.cfg.num_z_samples, 0)  # each obs repeated num_zs times x obs_dim --> (M) x obs_dim
+                acts = self.actor(obs, z, std=1.).mean  # (M x act_dim take the mean, although querying with std 0 anyways
+                F1, F2 = self.forward_net((obs, z, acts))  # ensemble_size x (M) x z_dim
+                Q1, Q2 = [torch.einsum('esd, ...sd -> es', Fi, z) for Fi in [F1, F2]]  # ensemble_size x (M)
+                epistemic_std1, epistemic_std2 = Q1.std(dim=0), Q2.std(dim=0)  # M # TODO only using epistemic_std1
+                epistemic_std1 = epistemic_std1.reshape(num_obs, self.cfg.num_z_samples)  # reshape ---> num_obs x num_z_samples
+                idxs = torch.argmax(epistemic_std1, dim=-1)  # num obs
+                z = z.reshape(num_obs, self.cfg.num_z_samples, -1)
+                meta['z'] = z[torch.arange(z.shape[0]), idxs]  # take the z with the highest epistemic uncertainty
+                meta['disagr'] = epistemic_std1.std(dim=-1)  # num_obs, std over disagreements
+                meta['updated'] = torch.tensor([[True]] * num_obs, device=self.cfg.device)
         else:
             raise not NotImplementedError
             with torch.no_grad():
@@ -242,16 +249,17 @@ class FBDDPGAgent:
 
     def update_meta(
         self,
-        meta: MetaDict,
+        meta: dict,
         env_step: torch.tensor,
         obs: torch.Tensor,
-    ) -> MetaDict:
+    ) -> dict:
         # substitute old zs for the new ones if it's time to update
-        if (env_step % self.cfg.update_z_every_step == 0).any():
-            new_meta = self.init_meta(obs) if not self.cfg.uncertainty else self.init_curious_meta(obs)
-            meta['z'][env_step % self.cfg.update_z_every_step == 0] = new_meta['z'][env_step % self.cfg.update_z_every_step == 0]
-            meta['updated'][env_step % self.cfg.update_z_every_step == 0] = new_meta['updated'][env_step % self.cfg.update_z_every_step == 0]
-            meta['updated'][env_step % self.cfg.update_z_every_step != 0] = torch.tensor(False, device=self.cfg.device)
+        indices = env_step % self.cfg.update_z_every_step == 0  # boolean tensor, reset indices
+        if indices.any():
+            new_meta = self.init_meta(obs[indices])
+            meta['z'][indices] = new_meta['z']
+            meta['updated'][indices] = new_meta['updated']
+            meta['updated'][~indices] = torch.full_like(meta['updated'][~indices], False)
 
         return meta
 
@@ -270,7 +278,7 @@ class FBDDPGAgent:
                 action.uniform_(-1.0, 1.0)
         return action
 
-    def compute_z_correl(self, time_step: TimeStep, meta: MetaDict) -> float:
+    def compute_z_correl(self, time_step: TimeStep, meta: dict) -> float:
         goal = time_step.goal  # type: ignore
         with torch.no_grad():
             zs = [torch.Tensor(x).unsqueeze(0).float().to(self.cfg.device) for x in [goal, meta["z"]]]
@@ -439,7 +447,7 @@ class FBDDPGAgent:
             return metrics
 
         average_meter = defaultdict(AverageMeter)
-        generator = replay_loader.mini_batch_generator(num_mini_batches=4, num_epochs=5)  # TODO update numbers?
+        generator = replay_loader.mini_batch_generator(mini_batch_size=512, num_epochs=1)  # TODO update numbers?
         for batch in generator:
             # batch = batch.to(self.cfg.device)
 
