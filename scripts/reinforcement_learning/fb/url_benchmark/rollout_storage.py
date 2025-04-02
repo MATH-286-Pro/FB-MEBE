@@ -72,6 +72,8 @@ class RolloutStorage:
         self.num_envs = num_envs
 
         self.step = 0
+        total_buffer_samples = num_transitions_per_env * num_envs
+        self.all_indices = torch.arange(0, total_buffer_samples, requires_grad=False, device=self.device).view(-1, 1)  # TODO very slow prob
 
     def add_transitions(self, transition: ExtendedTimeStep, meta: tp.Mapping[str, tp.Any]) -> None:
         if self.step >= self.num_transitions_per_env:
@@ -92,8 +94,6 @@ class RolloutStorage:
 
     def mini_batch_generator(self, mini_batch_size=256, num_epochs=8):
         assert not (self.observations[-1] == torch.zeros_like(self.observations[-1])).all(), 'Last observation is zero'
-        batch_size = self.num_envs * self.num_transitions_per_env
-        num_mini_batches = batch_size // mini_batch_size
         # indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
 
         observations = self.observations.flatten(0, 1)
@@ -103,15 +103,13 @@ class RolloutStorage:
         dones = self.dones.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
         rewards = self.rewards.flatten(0, 1)
-        indices = torch.arange(0, num_mini_batches * mini_batch_size, requires_grad=False, device=self.device).view(-1, 1)
         # remove from indices the indices of dones obs
-        indices = indices[dones[:len(indices)] == 0]
-        # remove indices between diff environments --> this is not needed since I am using next_observation tensor!
-        # indices = indices[indices % (self.num_transitions_per_env - 1) != 0]
-
+        indices = self.all_indices[dones == 0]
         # permute
         p = torch.randperm(len(indices))
         indices = indices[p]
+
+        num_mini_batches = len(indices) // mini_batch_size
 
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
