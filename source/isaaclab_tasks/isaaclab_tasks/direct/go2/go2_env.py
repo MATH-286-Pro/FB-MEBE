@@ -33,9 +33,12 @@ class Go2Env(DirectRLEnv):
             self.num_envs, gym.spaces.flatdim(self.single_action_space), device=self.device
         )
 
-        # X/Y linear velocity and yaw angular velocity commands
-        self._commands = torch.zeros(self.num_envs, 3, device=self.device)
+        # X/Y linear velocity and yaw angular velocity commands + base_tilt orientation
+        self._commands = torch.zeros(self.num_envs, 6, device=self.device)
         self.desired_velocity = torch.tensor([0.5, 0, 0], device=self.device)
+        self.desired_base_tilt = torch.tensor([0, 0, -1], device=self.device)
+        self.goal_space_type = "basic"
+        self.task_reward = "locomotion"
 
         # Logging
         self._episode_sums = {
@@ -51,7 +54,10 @@ class Go2Env(DirectRLEnv):
                 "action_rate_l2",
                 "feet_air_time",
                 "flat_orientation_l2",
-                "gait_symmetry"
+                "gait_symmetry",
+                "upright_orientation_l2",
+                "feet_contact",
+                "base_tilt_l2",
             ]
         }
         # Get specific body indices
@@ -87,29 +93,53 @@ class Go2Env(DirectRLEnv):
         obs = torch.cat(
             [
                 self._robot.data.root_lin_vel_b + (
-                        add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
+                    add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
                 self._robot.data.root_ang_vel_b + (
-                        add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
+                    add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
                 self._robot.data.projected_gravity_b + (
-                        add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
+                    add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
                 # self._commands,
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos + (
-                        add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
+                    add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
                 self._robot.data.joint_vel + (
-                        add_noise * torch.rand_like(self._robot.data.joint_vel) * 0.3 - 0.15),
+                    add_noise * torch.rand_like(self._robot.data.joint_vel) * 0.3 - 0.15),
                 self._actions,
             ],
             dim=-1,
         )
-        goal_dim = self._robot.data.root_lin_vel_b.shape[1] + self._robot.data.root_ang_vel_b.shape[1] +\
-            self._robot.data.projected_gravity_b.shape[1]
-        goal = obs[:, :goal_dim]  # TODO a bit hard coded!
+        goal = self._get_goal(obs)
 
         observations = {"policy": obs}
         observations["goal"] = goal
         return observations
 
+    def _get_goal(self, obs) -> torch.Tensor:
+        if self.goal_space_type == "basic":
+            goal_dim = self._robot.data.root_lin_vel_b.shape[1] + self._robot.data.root_ang_vel_b.shape[1] +\
+                self._robot.data.projected_gravity_b.shape[1]
+            goal = obs[:, :goal_dim]  # TODO a bit hard coded!
+        else:
+            return NotImplementedError
+        return goal
+
     def _get_rewards(self) -> torch.Tensor:
+
+        if self.task_reward == 'locomotion':
+            rewards = self._get_locomotion_rewards()
+        elif self.task_reward == 'upright':
+            rewards = self._get_upright_rewards()
+        elif self.task_reward == 'base_tilt':
+            rewards = self._get_base_tilt_rewards()
+        else:
+            raise ValueError(f"Unknown reward type: {self.task_reward}")
+
+        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        # Logging
+        for key, value in rewards.items():
+            self._episode_sums[key] += value
+        return reward
+
+    def _get_locomotion_rewards(self) -> torch.Tensor:
         # linear velocity tracking
         lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1)
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
@@ -137,7 +167,7 @@ class Go2Env(DirectRLEnv):
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]
         air_time = torch.sum((last_air_time - 0.5) * first_contact, dim=1) * (
-                torch.norm(self._commands[:, :2], dim=1) > 0.1
+            torch.norm(self._commands[:, :2], dim=1) > 0.1
         )
         # flat orientation
         flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
@@ -146,25 +176,28 @@ class Go2Env(DirectRLEnv):
         if self.reward_type == "trot":
             gait_symmetry = (0.5 * torch.logical_not(
                 torch.logical_xor(first_contact[:, 0], first_contact[:, 3])).double()
-                             + 0.5 * torch.logical_not(
-                        torch.logical_xor(first_contact[:, 1], first_contact[:, 2])).double())
-            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double() +
-                              0.5 * torch.logical_xor(
-                        first_contact[:, 2], first_contact[:, 3]).double())
+                + 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 1], first_contact[:, 2])).double())
+            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double()
+                              + 0.5 * torch.logical_xor(
+                first_contact[:, 2], first_contact[:, 3]).double())
             gait_symmetry = 0.5 * gait_symmetry + 0.5 * gait_symmetry2
         elif self.reward_type == "pace":
             gait_symmetry = (0.5 * torch.logical_not(
                 torch.logical_xor(first_contact[:, 0], first_contact[:, 2])).double()
-                             + 0.5 * torch.logical_not(
-                        torch.logical_xor(first_contact[:, 1], first_contact[:, 3])).double())
-            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double() +
-                              0.5 * torch.logical_xor(
-                        first_contact[:, 2], first_contact[:, 3]).double())
+                + 0.5 * torch.logical_not(
+                torch.logical_xor(first_contact[:, 1], first_contact[:, 3])).double())
+            gait_symmetry2 = (0.5 * torch.logical_xor(first_contact[:, 0], first_contact[:, 1]).double()
+                              + 0.5 * torch.logical_xor(
+                first_contact[:, 2], first_contact[:, 3]).double())
             gait_symmetry = 0.5 * gait_symmetry + 0.5 * gait_symmetry2
         elif self.reward_type == "default":
             gait_symmetry = torch.zeros_like(lin_vel_error_mapped)
         else:
             raise ValueError(f"Unknown rewrad type: {self.reward_type}")
+
+        if (self._commands[0, :3] == torch.zeros(3, device=self.device)).all():
+            gait_symmetry = torch.zeros_like(gait_symmetry)
 
         rewards = {
             "track_lin_vel_xy_exp": lin_vel_error_mapped * self.cfg.lin_vel_reward_scale * self.step_dt,
@@ -179,11 +212,39 @@ class Go2Env(DirectRLEnv):
             "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
             "gait_symmetry": gait_symmetry * self.cfg.gait_symmetry_reward_scale * self.step_dt,
         }
-        reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
-        # Logging
-        for key, value in rewards.items():
-            self._episode_sums[key] += value
-        return reward
+        return rewards
+
+    def _get_upright_rewards(self) -> torch.Tensor:
+        rewards = self._get_locomotion_rewards()
+        rewards["lin_vel_z_l2"] = torch.zeros_like(rewards["lin_vel_z_l2"])
+        rewards["ang_vel_xy_l2"] = torch.zeros_like(rewards["ang_vel_xy_l2"])
+        rewards["base_height_l2"] = torch.zeros_like(rewards["base_height_l2"])
+        rewards["feet_air_time"] = torch.zeros_like(rewards["feet_air_time"])
+        rewards["flat_orientation_l2"] = torch.zeros_like(rewards["flat_orientation_l2"])
+        upright_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, 1:]), dim=1)
+        rewards["upright_orientation_l2"] = upright_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt
+        rewards["gait_symmetry"] = torch.zeros_like(rewards["gait_symmetry"])
+        first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]
+
+        feet_contact = (0.5 * torch.logical_not(torch.logical_or(first_contact[:, 0], first_contact[:, 1]))).double() + \
+            (0.5 * torch.logical_and(first_contact[:, 2], first_contact[:, 3]).double())
+        rewards["feet_contact"] = feet_contact * self.cfg.gait_symmetry_reward_scale * self.step_dt
+
+        return rewards
+
+    def _get_base_tilt_rewards(self) -> torch.Tensor:
+        rewards = self._get_locomotion_rewards()
+        # rewards["lin_vel_z_l2"] = torch.zeros_like(rewards["lin_vel_z_l2"])
+        # rewards["ang_vel_xy_l2"] = torch.zeros_like(rewards["ang_vel_xy_l2"])
+        # rewards["base_height_l2"] = torch.zeros_like(rewards["base_height_l2"])
+        # rewards["feet_air_time"] = torch.zeros_like(rewards["feet_air_time"])
+        rewards["gait_symmetry"] = torch.zeros_like(rewards["gait_symmetry"])
+        rewards["flat_orientation_l2"] = torch.zeros_like(rewards["flat_orientation_l2"])
+        base_tilt_error = torch.sum(torch.square(self._commands[:, 3:6] - self._robot.data.projected_gravity_b), dim=1)
+
+        rewards["base_tilt_l2"] = base_tilt_error * self.cfg.flat_orientation_reward_scale * self.step_dt
+
+        return rewards
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
@@ -207,7 +268,7 @@ class Go2Env(DirectRLEnv):
         self._previous_actions[env_ids] = 0.0
         # Sample new commands
         # self._commands[env_ids] = torch.zeros_like(self._commands[env_ids]).uniform_(-1.0, 1.0)
-        self._commands[env_ids] = torch.ones_like(self._commands[env_ids]) * self.desired_velocity
+        self._commands[env_ids] = torch.ones_like(self._commands[env_ids]) * torch.cat((self.desired_velocity, self.desired_base_tilt), dim=0)
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]

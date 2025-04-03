@@ -354,7 +354,6 @@ class Workspace(BaseWorkspace[Config]):
                     self.eval_video_recorder.step(self.global_step + self.eval_step)
                     self.eval_step += 1
             total_reward = self.eval_loader.rewards.sum(axis=0).mean().item()
-            breakpoint()
             task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
             print(f'Total reward. {task}:', total_reward)
             self.logger.log_metrics({"episode_reward": total_reward,
@@ -372,8 +371,10 @@ class Workspace(BaseWorkspace[Config]):
         print('\nSetting task rewards ....\n ')
         self.default_desired_vel = self.train_env.unwrapped.desired_velocity
         self.default_pace = self.train_env.unwrapped.reward_type
-        self.train_env.unwrapped.desired_velocity = torch.tensor([.5, 0.0, 0.0], device=self.device)
+        self.train_env.unwrapped.desired_velocity = torch.tensor([0.5, 0.0, 0.0], device=self.device)
         self.train_env.unwrapped.reward_type = "trot"
+        self.train_env.unwrapped.task_reward = "locomotion" #"base_tilt, upright"
+        
         print('Changed reward to: desired_velocity ', self.train_env.unwrapped.desired_velocity,
               ' pace:', self.train_env.unwrapped.reward_type)
 
