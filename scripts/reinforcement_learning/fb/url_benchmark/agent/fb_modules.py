@@ -181,16 +181,16 @@ class EnsembleMLP(nn.Module):
         #  stacked parameters are optimizable (i.e. they are new leaf nodes in the
         # autograd history that are UNRELATED to the original parameters and can be passed
         # directly to an optimizer).
-        # buffers accounts for all non_trainable_params, we wont need it
+        #  buffers accounts for all non_trainable_params, we wont need it
         self.ensemble_params, buffers = torch.func.stack_module_state(ensemble)
         # Construct a "stateless" version of one of the models. It is "stateless" in
         # the sense that the parameters are meta Tensors and do not have storage, we do this by to."meta"
         # we also assign base_model as tuple  to avoid copying the parameters (avoid registration), otw, EnsembleMLP
         # object, will also have self.base_model params, additionally to the self.ensemble_params above.
-        
+
         # TODO: Didnt' we need base_model to be a tuple?
         # self.base_model = (deepcopy(ensemble[0]).to("meta"),)  # used as a fct
-        
+
         base_model = deepcopy(ensemble[0])
         self.base_model = base_model.to('meta')
         # self.device = base_model.device
@@ -215,13 +215,12 @@ class EnsembleMLP(nn.Module):
         def fmodel(params, buffers, x):
             return torch.func.functional_call(self.base_model, (params, buffers), (x,))
 
-
         # vmap(func) returns a new function that maps func over some dimensions of the inputs.
-        # in this case func is fmodel, that has as inputs (params, buffers, x).
-        # so we want to map over params (which are each of the ensemble params), buffers is empty, and we don't want to map
-        # over x (unless we want different x for different ensemble members) hence:  in_dims = (0,0, None)
+        #  in this case func is fmodel, that has as inputs (params, buffers, x).
+        #  so we want to map over params (which are each of the ensemble params), buffers is empty, and we don't want to map
+        #  over x (unless we want different x for different ensemble members) hence:  in_dims = (0,0, None)
         # By using ``None``, we tell ``vmap`` we want the same minibatch to apply for all of
-        # the num_ensemble models        
+        # the num_ensemble models
         ensemble_out = torch.vmap(fmodel, in_dims=(0, 0, None))(self.ensemble_params, {}, x)
 
         return ensemble_out
@@ -259,7 +258,7 @@ class ForwardMap(nn.Module):
 
         self.apply(utils.weight_init)
 
-    def forward(self, x: tuple):  #obs, z, action)
+    def forward(self, x: tuple):  # obs, z, action)
         assert isinstance(x, tuple), "x must be a tuple: (obs, z, action)"
         obs, z, action = x
         assert z.shape[-1] == self.z_dim
@@ -326,12 +325,16 @@ class MultinputNet(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, obs_dim, action_dim, z_dim, hidden_dim) -> None:
+    def __init__(self, obs_dim, action_dim, z_dim, layers=[256, 256], nl="relu", out_dim=1) -> None:
         super().__init__()
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.z_dim = z_dim
-        self.Q = mlp(obs_dim + action_dim + self.z_dim, hidden_dim, "ntanh", hidden_dim, "relu", 1)
+        seq = [obs_dim + action_dim + z_dim]
+        for layer in layers:
+            seq.append(layer)
+            seq.append(nl)
+        seq.append(out_dim)
+        self.Q = mlp(*seq)
         self.apply(utils.weight_init)
 
     def forward(self, obs, action, z):

@@ -40,7 +40,6 @@ class FBDDPGAgentConfig:
     lr: float = 1e-4
     lr_coef: float = 1
     fb_target_tau: float = 0.01  # 0.001-0.01
-    update_every_steps: int = 2
     num_expl_steps: int = omegaconf.MISSING  # ???  # to be specified later
     num_inference_steps: int = 5120
     hidden_dim: int = 1024   # 128, 2048
@@ -57,7 +56,6 @@ class FBDDPGAgentConfig:
     ortho_coef: float = 1.0  # 0.01-10
     log_std_bounds: tp.Tuple[float, float] = (-5, 2)  # param for DiagGaussianActor
     temp: float = 1  # temperature for DiagGaussianActor
-    boltzmann: bool = False  # set to true for DiagGaussianActor
     future_ratio: float = 0.0
     mix_ratio: float = 0.5  # 0-1
     rand_weight: bool = False  # True, False
@@ -68,6 +66,8 @@ class FBDDPGAgentConfig:
     n_ensemble: int = 5
     sampling: bool = False  # use argmax to sample curious z (True), otw policy
     num_z_samples: int = 100
+    critic_reg: bool = False
+    coef_critic_reg: float = 0.3
 
 
 cs = ConfigStore.instance()
@@ -95,13 +95,9 @@ class FBDDPGAgent:
         if cfg.z_dim < goal_dim:
             logger.warning(f"z_dim {cfg.z_dim} should not be smaller that goal_dim {goal_dim}")
         # create the network
-        if self.cfg.boltzmann:
-            self.actor: nn.Module = DiagGaussianActor(self.obs_dim, cfg.z_dim, self.action_dim,
-                                                      cfg.hidden_dim, cfg.log_std_bounds).to(cfg.device)
-        else:
-            self.actor = Actor(self.obs_dim, cfg.z_dim, self.action_dim,
-                               cfg.feature_dim, cfg.hidden_dim,
-                               preprocess=cfg.preprocess, add_trunk=self.cfg.add_trunk).to(cfg.device)
+        self.actor = Actor(self.obs_dim, cfg.z_dim, self.action_dim,
+                           cfg.feature_dim, cfg.hidden_dim,
+                           preprocess=cfg.preprocess, add_trunk=self.cfg.add_trunk).to(cfg.device)
         if self.cfg.uncertainty and not self.cfg.sampling:
             self.high_expl_actor = HighLevelActor(self.obs_dim, cfg.z_dim, cfg.hidden_dim).to(cfg.device)
 
@@ -131,7 +127,11 @@ class FBDDPGAgent:
         self.fb_opt = torch.optim.Adam([{'params': self.forward_net.parameters()},  # type: ignore
                                         {'params': self.backward_net.parameters(), 'lr': cfg.lr_coef * cfg.lr}],
                                        lr=cfg.lr)
-
+        if self.cfg.critic_reg:
+            self.Qreg = Critic(self.obs_dim, self.action_dim, cfg.z_dim, layers=[256, 256], out_dim=1).to(cfg.device)
+            self.target_Qreg = Critic(self.obs_dim, self.action_dim, cfg.z_dim, layers=[256, 256], out_dim=1).to(cfg.device)
+            self.target_Qreg.load_state_dict(self.Qreg.state_dict())
+            self.Qreg_opt = torch.optim.Adam([{'params': self.Qreg.parameters()}], lr=cfg.lr)
         self.train()
         self.forward_target_net.train()
         self.backward_target_net.train()
@@ -265,11 +265,8 @@ class FBDDPGAgent:
 
     def act(self, obs, meta, step, eval_mode) -> tp.Any:
         z = meta['z']
-        if self.cfg.boltzmann:
-            dist = self.actor(obs, z)
-        else:
-            stddev = utils.schedule(self.cfg.stddev_schedule, step)
-            dist = self.actor(obs, z, stddev)
+        stddev = utils.schedule(self.cfg.stddev_schedule, step)
+        dist = self.actor(obs, z, stddev)
         if eval_mode:
             action = dist.mean
         else:
@@ -295,18 +292,13 @@ class FBDDPGAgent:
         next_goal: torch.Tensor,
         z: torch.Tensor,
         step: int,
-        goal: torch.Tensor,
     ) -> tp.Dict[str, float]:
         metrics: tp.Dict[str, float] = {}
         # compute target successor measure
         with torch.no_grad():
-            if self.cfg.boltzmann:
-                dist = self.actor(next_obs, z)
-                next_action = dist.sample()
-            else:
-                stddev = utils.schedule(self.cfg.stddev_schedule, step)
-                dist = self.actor(next_obs, z, stddev)
-                next_action = dist.sample(clip=self.cfg.stddev_clip)
+            stddev = utils.schedule(self.cfg.stddev_schedule, step)
+            dist = self.actor(next_obs, z, stddev)
+            next_action = dist.sample(clip=self.cfg.stddev_clip)
             target_F1, target_F2 = self.forward_target_net((next_obs, z, next_action))  # e? x batch x z_dim
             target_B = self.backward_target_net(next_goal)  # batch x z_dim # TODO changed to next_goal for fb_diag to make sense
             if not self.cfg.uncertainty:
@@ -381,13 +373,9 @@ class FBDDPGAgent:
 
     def update_actor(self, obs: torch.Tensor, z: torch.Tensor, step: int) -> tp.Dict[str, float]:
         metrics: tp.Dict[str, float] = {}
-        if self.cfg.boltzmann:
-            dist = self.actor(obs, z)
-            action = dist.rsample()  # differentiable/ non differentiable?
-        else:
-            stddev = utils.schedule(self.cfg.stddev_schedule, step)
-            dist = self.actor(obs, z, stddev)
-            action = dist.sample(clip=self.cfg.stddev_clip)  # non differentiable / differentiable?
+        stddev = utils.schedule(self.cfg.stddev_schedule, step)
+        dist = self.actor(obs, z, stddev)
+        action = dist.sample(clip=self.cfg.stddev_clip)  # non differentiable / differentiable?
 
         log_prob = dist.log_prob(action).sum(-1, keepdim=True)
         F1, F2 = self.forward_net((obs, z, action))
@@ -401,7 +389,12 @@ class FBDDPGAgent:
             Q2 = torch.einsum('sd, sd -> s', F2, z)
 
         Q = torch.min(Q1, Q2)
-        actor_loss = (self.cfg.temp * log_prob - Q).mean() if self.cfg.boltzmann else -Q.mean()
+
+        actor_loss = -Q.mean()
+
+        if self.cfg.critic_reg:
+            Q_reg = self.Qreg(obs, action, z).mean()
+            actor_loss -= self.cfg.coef_critic_reg * Q_reg
 
         # optimize actor
         self.actor_opt.zero_grad(set_to_none=True)
@@ -409,10 +402,27 @@ class FBDDPGAgent:
         self.actor_opt.step()
 
         metrics['actor_loss'] = actor_loss.item()
+        metrics['actor_loss_reg'] = self.cfg.coef_critic_reg * Q_reg.item()
+        metrics['actor_loss_fb'] = Q.mean().item()
         metrics['q'] = Q.mean().item()
         metrics['actor_logprob'] = log_prob.mean().item()
         # metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()
 
+        return metrics
+
+    def update_Qreg(self, obs: torch.Tensor, action: torch.Tensor, discount: torch.Tensor, next_obs: torch.Tensor, z: torch.Tensor, rew: torch.Tensor):
+
+        values_Qreg = self.Qreg(obs, action, z)
+        with torch.no_grad():
+            next_action = self.actor(next_obs, z, std=1.).sample()
+            target_values_Qreg = self.target_Qreg(next_obs, next_action, z)
+        Qreg_loss = F.mse_loss(values_Qreg, rew + discount * target_values_Qreg)
+        self.Qreg_opt.zero_grad()
+        Qreg_loss.backward()
+        self.Qreg_opt.step()
+
+        metrics = {}
+        metrics['Qreg_loss'] = Qreg_loss.item()
         return metrics
 
     def update_high_expl_actor(self, obs: torch.Tensor, step: int) -> tp.Dict[str, float]:
@@ -443,9 +453,6 @@ class FBDDPGAgent:
     def update(self, replay_loader: RolloutStorage, step: int) -> tp.Dict[str, float]:
         metrics: tp.Dict[str, float] = {}
 
-        if step % self.cfg.update_every_steps != 0:
-            return metrics
-
         average_meter = defaultdict(AverageMeter)
         generator = replay_loader.mini_batch_generator(mini_batch_size=512, num_epochs=1)  # TODO update numbers?
         for batch in generator:
@@ -458,6 +465,7 @@ class FBDDPGAgent:
             next_obs = batch.next_obs
             batch_size = obs.size(0)
             next_goal = batch.next_goal
+            rew = batch.reward
 
             z = self.sample_z(batch_size, device=self.cfg.device)
             if not z.shape[-1] == self.cfg.z_dim:
@@ -493,7 +501,13 @@ class FBDDPGAgent:
                 z[future_idxs] = self.backward_net(future_goal[future_idxs]).detach()
             metrics.update(self.update_fb(obs=obs, action=action, discount=discount,
                                           next_obs=next_obs, next_goal=next_goal, z=z, step=step,
-                                          goal=goal))  # type: ignore
+                                          ))  # type: ignore
+
+            # update critic regularizer
+
+            if self.cfg.critic_reg:
+                metrics.update(self.update_Qreg(obs=obs, action=action, discount=discount,
+                                                next_obs=next_obs, z=z, rew=rew))
             # update high expl actor
             if self.cfg.uncertainty and not self.cfg.sampling:
                 metrics.update(self.update_high_expl_actor(obs, step))

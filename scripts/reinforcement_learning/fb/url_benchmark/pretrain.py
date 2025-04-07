@@ -126,7 +126,7 @@ class Config:
     final_tests: int = 10
     # checkpoint # num episode * length of episode
     snapshot_at: tp.Tuple[int, ...] = (0, 250, 500, 1000, 1500, 2000)
-    checkpoint_every: int = 10000
+    checkpoint_every: int = 40000
     load_model: tp.Optional[str] = None
     # training
     num_seed_steps: int = 4000
@@ -196,7 +196,6 @@ class BaseWorkspace(tp.Generic[C]):
         self.device = torch.device(cfg.device)
 
         self.train_env = self._make_env(env_cfg)
-        # self.eval_env = self._make_env()
         # create agent
         self.agent = make_agent(cfg.obs_type,
                                 self.train_env.observation_spec,
@@ -394,11 +393,11 @@ class Workspace(BaseWorkspace[Config]):
         self.train_env.close()
 
     def eval(self) -> None:
+        self.set_task()
         self.collect_eval_data()
         eval_meta = self.init_eval_meta()
         eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
         self.eval_loader.clear()
-        self.train_env.unwrapped.use_termination = False
         self.eval_step = 0
         time_step = self.train_env.reset()
         while self.eval_step < self.train_env.max_episode_length:
@@ -418,7 +417,42 @@ class Workspace(BaseWorkspace[Config]):
                                 ty='eval')
         self.logger.log_metrics(extras['log'], ty='eval')
         self.eval_video_recorder.close()
-        self.train_env.unwrapped.use_termination = True
+        self.reset_task()
+
+    def set_task(self) -> None:
+        self.default_desired_vel = self.train_env.unwrapped.desired_velocity
+        self.default_pace = self.train_env.unwrapped.reward_type
+        self.default_uncertainty_ = self.cfg.uncertainty
+        self.default_z_every_step = self.agent.cfg.update_z_every_step
+
+        self.train_env.unwrapped.desired_velocity = torch.tensor([0.5, 0.0, 0.0], device=self.device)
+        self.train_env.unwrapped.reward_type = "trot"
+        self.cfg.uncertainty, self.agent.cfg.uncertainty = False, False
+        self.agent.cfg.update_z_every_step = 1
+
+        self.train_env.unwrapped.task_reward = "locomotion"  # "base_tilt, upright"
+        self.train_env.unwrapped.use_termination = False
+
+    def reset_task(self) -> None:
+        if hasattr(self.train_env.unwrapped, 'desired_velocity'):
+            self.train_env.unwrapped.desired_velocity = self.default_desired_vel
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
+        if hasattr(self.train_env.unwrapped, 'reward_type'):
+            self.train_env.unwrapped.reward_type = self.default_pace
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
+        self.cfg.uncertainty, self.agent.cfg.uncertainty = self.default_uncertainty_, self.default_uncertainty_
+        self.agent.cfg.update_z_every_step = self.default_z_every_step
+
+        if hasattr(self.train_env.unwrapped, 'task_reward'):
+            self.train_env.unwrapped.task_reward = "reg_locomotion"
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
+        if hasattr(self.train_env.unwrapped, 'use_termination'):
+            self.train_env.unwrapped.use_termination = True
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
 
     def collect_eval_data(self) -> None:
         # TODO set desired reward cfg

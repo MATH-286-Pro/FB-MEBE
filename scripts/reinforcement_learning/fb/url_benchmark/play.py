@@ -127,7 +127,7 @@ class Config:
     final_tests: int = 10
     # checkpoint # num episode * length of episode
     snapshot_at: tp.Tuple[int, ...] = (0, 250, 500, 1000, 1500, 2000)
-    checkpoint_every: int = 100000
+    checkpoint_every: int = 40000
     load_model: tp.Optional[str] = None
     # training
     num_seed_steps: int = 4000
@@ -197,7 +197,6 @@ class BaseWorkspace(tp.Generic[C]):
         self.device = torch.device(cfg.device)
 
         self.train_env = self._make_env(env_cfg)
-        # self.eval_env = self._make_env()
         # create agent
         self.agent = make_agent(cfg.obs_type,
                                 self.train_env.observation_spec,
@@ -209,7 +208,7 @@ class BaseWorkspace(tp.Generic[C]):
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
-
+        
         # save (reduced) agent config and env_cfg
         if not isinstance(env_cfg, dict):
             save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
@@ -308,7 +307,6 @@ class BaseWorkspace(tp.Generic[C]):
         for x in exclude:
             payload.pop(x, None)
         for name, val in payload.items():
-            print(name, val)
             logger.info("Reloading %s from %s", name, fp)
             if name == "agent":
                 self.agent.init_from(val)
@@ -333,19 +331,14 @@ class Workspace(BaseWorkspace[Config]):
 
     def eval(self) -> None:
         self.set_task()
-
-        self.collect_eval_data()
-        eval_meta = self.init_eval_meta()
-        eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
-        self.eval_loader.clear()
-        self.train_env.unwrapped.use_termination = False
         for i in range(100):
             print('eval episode', i)
-            self.eval_step = 0
+            self.collect_eval_data()
+            eval_meta = self.init_eval_meta()
+            eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
             self.eval_loader.clear()
-
+            self.eval_step = 0
             time_step = self.train_env.reset()
-
             while self.eval_step < self.train_env.max_episode_length:
                 with torch.no_grad():
                     action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
@@ -364,35 +357,42 @@ class Workspace(BaseWorkspace[Config]):
                                     ty='eval')
             self.logger.log_metrics(extras['log'], ty='eval')
         self.eval_video_recorder.close()
-        self.train_env.unwrapped.use_termination = True
         self.reset_task()
 
     def set_task(self) -> None:
         print('\nSetting task rewards ....\n ')
         self.default_desired_vel = self.train_env.unwrapped.desired_velocity
         self.default_pace = self.train_env.unwrapped.reward_type
+        self.default_uncertainty_ = self.cfg.uncertainty
+        self.default_z_every_step = self.agent.cfg.update_z_every_step
+
         self.train_env.unwrapped.desired_velocity = torch.tensor([0.5, 0.0, 0.0], device=self.device)
         self.train_env.unwrapped.reward_type = "trot"
-        self.train_env.unwrapped.task_reward = "locomotion" #"base_tilt, upright"
-        
-        print('Changed reward to: desired_velocity ', self.train_env.unwrapped.desired_velocity,
-              ' pace:', self.train_env.unwrapped.reward_type)
-
-        print('\nSetting uncertainty....\n')
-        self.default_uncertainty_ = self.cfg.uncertainty
         self.cfg.uncertainty, self.agent.cfg.uncertainty = False, False
-        print('\nSet uncertainty to ', self.agent.cfg.uncertainty)
-        
-        print('\nSetting z update step....\n')
-        self.default_z_every_step = self.agent.cfg.update_z_every_step
-        self.agent.cfg.update_z_every_step = 10
-        print('\nSet z update step to ', self.agent.cfg.update_z_every_step)
+        self.agent.cfg.update_z_every_step = 1
+        self.train_env.unwrapped.task_reward = "locomotion"  # "base_tilt, upright"
+        self.train_env.unwrapped.use_termination = False
 
     def reset_task(self) -> None:
-        self.train_env.unwrapped.desired_velocity = self.default_desired_vel
-        self.train_env.unwrapped.reward_type = self.default_pace
+        if hasattr(self.train_env.unwrapped, 'desired_velocity'):
+            self.train_env.unwrapped.desired_velocity = self.default_desired_vel
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
+        if hasattr(self.train_env.unwrapped, 'reward_type'):
+            self.train_env.unwrapped.reward_type = self.default_pace
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
         self.cfg.uncertainty, self.agent.cfg.uncertainty = self.default_uncertainty_, self.default_uncertainty_
         self.agent.cfg.update_z_every_step = self.default_z_every_step
+
+        if hasattr(self.train_env.unwrapped, 'task_reward'):
+            self.train_env.unwrapped.task_reward = "reg_locomotion"
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
+        if hasattr(self.train_env.unwrapped, 'use_termination'):
+            self.train_env.unwrapped.use_termination = True
+        else:
+            print("Attribute does not exist for the environment. Skipping assignment.")
 
     def collect_eval_data(self) -> None:
         self.eval_loader.clear()

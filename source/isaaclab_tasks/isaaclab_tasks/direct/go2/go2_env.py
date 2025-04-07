@@ -38,7 +38,7 @@ class Go2Env(DirectRLEnv):
         self.desired_velocity = torch.tensor([0.5, 0, 0], device=self.device)
         self.desired_base_tilt = torch.tensor([0, 0, -1], device=self.device)
         self.goal_space_type = "basic"
-        self.task_reward = "locomotion"
+        self.task_reward = "reg_locomotion"  # make this default for training with regularizer
 
         # Logging
         self._episode_sums = {
@@ -130,6 +130,8 @@ class Go2Env(DirectRLEnv):
             rewards = self._get_upright_rewards()
         elif self.task_reward == 'base_tilt':
             rewards = self._get_base_tilt_rewards()
+        elif self.task_reward == 'reg_locomotion':
+            rewards = self._get_reg_locomotion_rewards()
         else:
             raise ValueError(f"Unknown reward type: {self.task_reward}")
 
@@ -139,7 +141,7 @@ class Go2Env(DirectRLEnv):
             self._episode_sums[key] += value
         return reward
 
-    def _get_locomotion_rewards(self) -> torch.Tensor:
+    def _get_locomotion_rewards(self) -> dict[str, torch.Tensor]:
         # linear velocity tracking
         lin_vel_error = torch.sum(torch.square(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2]), dim=1)
         lin_vel_error_mapped = torch.exp(-lin_vel_error / 0.25)
@@ -214,7 +216,7 @@ class Go2Env(DirectRLEnv):
         }
         return rewards
 
-    def _get_upright_rewards(self) -> torch.Tensor:
+    def _get_upright_rewards(self) -> dict[str, torch.Tensor]:
         rewards = self._get_locomotion_rewards()
         rewards["lin_vel_z_l2"] = torch.zeros_like(rewards["lin_vel_z_l2"])
         rewards["ang_vel_xy_l2"] = torch.zeros_like(rewards["ang_vel_xy_l2"])
@@ -232,7 +234,7 @@ class Go2Env(DirectRLEnv):
 
         return rewards
 
-    def _get_base_tilt_rewards(self) -> torch.Tensor:
+    def _get_base_tilt_rewards(self) -> dict[str, torch.Tensor]:
         rewards = self._get_locomotion_rewards()
         # rewards["lin_vel_z_l2"] = torch.zeros_like(rewards["lin_vel_z_l2"])
         # rewards["ang_vel_xy_l2"] = torch.zeros_like(rewards["ang_vel_xy_l2"])
@@ -244,6 +246,21 @@ class Go2Env(DirectRLEnv):
 
         rewards["base_tilt_l2"] = base_tilt_error * self.cfg.flat_orientation_reward_scale * self.step_dt
 
+        return rewards
+
+    def _get_reg_locomotion_rewards(self) -> dict[str, torch.Tensor]:
+        # joint torques
+        joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
+        # joint acceleration
+        joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
+        # action rate
+        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
+
+        rewards = {
+            "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
+            "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
+            "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
+        }
         return rewards
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
