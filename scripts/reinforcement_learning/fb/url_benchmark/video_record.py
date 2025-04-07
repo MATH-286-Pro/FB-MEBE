@@ -18,7 +18,8 @@ class VideoRecorder:
             video_prefix: str = "video",
             video_fps: int = 30,
             wandb: bool = False,
-            enabled: bool = False
+            enabled: bool = False,
+            save_video: bool = False,
     ):
         if env.render_mode in {None, "human", "ansi", "ansi_list"} and enabled:
             raise ValueError(
@@ -40,6 +41,7 @@ class VideoRecorder:
         self.video_id = 0
         self.recording = False
         self.recorded_frames = []
+        self.save_video = save_video
 
     def start_video_recorder(self, iter_id):
         """Starts video recorder using :class:`video_recorder.VideoRecorder`."""
@@ -66,12 +68,13 @@ class VideoRecorder:
     def close_video_recorder(self, iter_id=None):
         """Closes the video recorder if currently recording."""
         if self.recording and iter_id is not None:
-            video_name = f"{self.video_prefix}-step-{self.video_id}"
+            if self.save_video:
+                video_name = f"{self.video_prefix}-step-{self.video_id}"
 
-            base_path = os.path.join(self.video_folder, video_name)
-            video_path = base_path + ".mp4"
-            clip = ImageSequenceClip(self.recorded_frames, fps=self.video_fps)
-            clip.write_videofile(video_path, logger=None)
+                base_path = os.path.join(self.video_folder, video_name)
+                video_path = base_path + ".mp4"
+                clip = ImageSequenceClip(self.recorded_frames, fps=self.video_fps)
+                clip.write_videofile(video_path, logger=None)
             if self.wandb:
                 # adding wandb step here will not work since the video is not logged immediately...
                 wandb.log({f"{self.video_prefix}": wandb.Video(np.array(self.recorded_frames).transpose(0, 3, 1, 2),
