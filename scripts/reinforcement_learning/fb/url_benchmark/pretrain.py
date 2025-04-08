@@ -179,6 +179,7 @@ class BaseWorkspace(tp.Generic[C]):
         os.makedirs(self.work_dir, exist_ok=True)
         if 'cluster' not in str(self.work_dir):
             self.model_dir = self.work_dir
+            cfg.working_dir = self.work_dir
         else:
             raise NotImplementedError  # Path(str(self.work_dir).replace('home', 'scratch'))
         print(f'Workspace: {self.work_dir}')
@@ -218,7 +219,7 @@ class BaseWorkspace(tp.Generic[C]):
             yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
         if cfg.use_wandb:
             exp_name = '_'.join([
-                cfg.agent.name, args_cli.task, cfg.experiment
+                cfg.agent.name, args_cli.task, cfg.experiment, date
             ])
             wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=final_cfg, dir=self.work_dir)  # type: ignore
