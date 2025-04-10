@@ -68,6 +68,7 @@ class FBDDPGAgentConfig:
     num_z_samples: int = 100
     critic_reg: bool = False
     coef_critic_reg: float = 0.3
+    epoch_repeats: int = 4
 
 
 cs = ConfigStore.instance()
@@ -163,20 +164,6 @@ class FBDDPGAgent:
         meta = OrderedDict()
         meta['z'] = z
         return meta
-
-    def infer_meta(self, replay_loader: RolloutStorage) -> dict:
-        obs_list, reward_list = [], []
-        batch_size = 0
-        generator = replay_loader.mini_batch_generator(mini_batch_size=256, num_epochs=1)  # TODO update numbers?
-        for batch in generator:
-            obs_list.append(batch.next_goal)
-            reward_list.append(batch.reward)
-            batch_size += batch.next_obs.size(0)
-            if batch_size >= self.cfg.num_inference_steps:
-                break
-        obs, reward = torch.cat(obs_list, 0), torch.cat(reward_list, 0)  # type: ignore
-        obs, reward = obs[:self.cfg.num_inference_steps], reward[:self.cfg.num_inference_steps]
-        return self.infer_meta_from_obs_and_rewards(obs, reward)
 
     def infer_meta_from_obs_and_rewards(self, obs: torch.Tensor, reward: torch.Tensor) -> dict:
         with torch.no_grad():
@@ -454,7 +441,7 @@ class FBDDPGAgent:
         metrics: tp.Dict[str, float] = {}
 
         average_meter = defaultdict(AverageMeter)
-        generator = replay_loader.mini_batch_generator(mini_batch_size=512, num_epochs=1)  # TODO update numbers?
+        generator = replay_loader.mini_batch_generator(mini_batch_size=512, num_epochs=self.cfg.epoch_repeats)  # TODO update numbers?
         for batch in generator:
             # batch = batch.to(self.cfg.device)
 

@@ -24,7 +24,8 @@ agent:
   update_z_proba: 1.
   num_z_samples: 100
   critic_reg: true
-  coef_critic_reg: 0.3
+  coef_critic_reg: 100
+  epoch_repeats: 4
 
 num_eval_episodes: 10
 hydra:
