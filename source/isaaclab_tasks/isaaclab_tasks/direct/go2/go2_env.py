@@ -255,11 +255,15 @@ class Go2Env(DirectRLEnv):
         joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
         # action rate
         action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
+        # flat orientation
+        flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
 
         rewards = {
             "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
             "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
             "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
+            "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
+
         }
         return rewards
 
