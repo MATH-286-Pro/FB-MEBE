@@ -89,6 +89,8 @@ from url_benchmark.rollout_storage import RolloutStorage
 from url_benchmark.video_record import VideoRecorder
 from url_benchmark import agent as agents
 from datetime import datetime
+from collections import defaultdict
+
 
 logger = logging.getLogger(__name__)
 # torch.backends.cudnn.benchmark = True
@@ -219,7 +221,7 @@ class BaseWorkspace(tp.Generic[C]):
             yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
         if cfg.use_wandb:
             exp_name = '_'.join([
-                cfg.agent.name, args_cli.task, cfg.experiment, date
+                cfg.experiment, date
             ])
             wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=final_cfg, dir=self.work_dir)  # type: ignore
@@ -274,7 +276,6 @@ class BaseWorkspace(tp.Generic[C]):
         env = FBVecEnvWrapper(env)
 
         return env
-
 
     _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
 
@@ -401,14 +402,17 @@ class Workspace(BaseWorkspace[Config]):
         self.eval_loader.clear()
         self.eval_step = 0
         time_step = self.train_env.reset()
+        total_reward_dict = defaultdict(float)
         while self.eval_step < self.train_env.max_episode_length:
             with torch.no_grad():
                 action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
                 time_step, extras = self.train_env.step(action)
                 self.eval_loader.add_transitions(time_step, eval_meta)
                 self.eval_video_recorder.step(self.global_step + self.eval_step)
+                for k, v in extras['rew_dict'].items():
+                    total_reward_dict[k] += v.item()
                 self.eval_step += 1
-        total_reward = self.eval_loader.rewards.sum(axis=0).mean().item()
+        total_reward = sum([v for v in total_reward_dict.values()])
         task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
         self.logger.log_metrics({"episode_reward": total_reward,
                                  f"episode_reward{task}": total_reward,
@@ -416,7 +420,7 @@ class Workspace(BaseWorkspace[Config]):
                                  "step": self.global_step,
                                  },
                                 ty='eval')
-        self.logger.log_metrics(extras['log'], ty='eval')
+        self.logger.log_metrics(total_reward_dict, ty='eval')
         self.eval_video_recorder.close()
         self.reset_task()
 

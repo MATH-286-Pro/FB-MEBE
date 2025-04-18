@@ -65,6 +65,7 @@ import typing as tp
 import warnings
 from pathlib import Path
 import time
+from collections import defaultdict
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -339,14 +340,18 @@ class Workspace(BaseWorkspace[Config]):
             self.eval_loader.clear()
             self.eval_step = 0
             time_step = self.train_env.reset()
+            total_reward_dict = defaultdict(float)
             while self.eval_step < self.train_env.max_episode_length:
                 with torch.no_grad():
                     action = self.agent.act(time_step.observation, eval_meta, self.global_step, eval_mode=True)
                     time_step, extras = self.train_env.step(action)
                     self.eval_loader.add_transitions(time_step, eval_meta)
                     self.eval_video_recorder.step(self.global_step + self.eval_step)
+                    for k, v in extras['rew_dict'].items():
+                        total_reward_dict[k] += v.item()
+                    
                     self.eval_step += 1
-            total_reward = self.eval_loader.rewards.sum(axis=0).mean().item()
+            total_reward = sum([v for v in total_reward_dict.values()])
             task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
             print(f'Total reward. {task}:', total_reward)
             self.logger.log_metrics({"episode_reward": total_reward,
@@ -355,7 +360,7 @@ class Workspace(BaseWorkspace[Config]):
                                      "step": self.global_step,
                                      },
                                     ty='eval')
-            self.logger.log_metrics(extras['log'], ty='eval')
+            self.logger.log_metrics(total_reward_dict, ty='eval')
         self.eval_video_recorder.close()
         self.reset_task()
 

@@ -382,6 +382,8 @@ class FBDDPGAgent:
         if self.cfg.critic_reg:
             Q_reg = self.Qreg(obs, action, z).mean()
             actor_loss -= self.cfg.coef_critic_reg * Q_reg
+            metrics['actor_loss_reg'] = -self.cfg.coef_critic_reg * Q_reg.item()
+            metrics['actor_loss_fb'] = -Q.mean().item()
 
         # optimize actor
         self.actor_opt.zero_grad(set_to_none=True)
@@ -389,8 +391,6 @@ class FBDDPGAgent:
         self.actor_opt.step()
 
         metrics['actor_loss'] = actor_loss.item()
-        metrics['actor_loss_reg'] = self.cfg.coef_critic_reg * Q_reg.item()
-        metrics['actor_loss_fb'] = Q.mean().item()
         metrics['q'] = Q.mean().item()
         metrics['actor_logprob'] = log_prob.mean().item()
         # metrics['actor_ent'] = dist.entropy().sum(dim=-1).mean().item()

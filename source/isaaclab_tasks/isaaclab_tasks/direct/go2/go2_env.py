@@ -122,7 +122,7 @@ class Go2Env(DirectRLEnv):
             return NotImplementedError
         return goal
 
-    def _get_rewards(self) -> torch.Tensor:
+    def _get_rewards(self) -> tuple[torch.Tensor, dict]:
 
         if self.task_reward == 'locomotion':
             rewards = self._get_locomotion_rewards()
@@ -136,10 +136,12 @@ class Go2Env(DirectRLEnv):
             raise ValueError(f"Unknown reward type: {self.task_reward}")
 
         reward = torch.sum(torch.stack(list(rewards.values())), dim=0)
+        rew_dict = dict()
         # Logging
         for key, value in rewards.items():
             self._episode_sums[key] += value
-        return reward
+            rew_dict["Step_Reward/" + key] = torch.mean(value)
+        return reward, rew_dict
 
     def _get_locomotion_rewards(self) -> dict[str, torch.Tensor]:
         # linear velocity tracking
@@ -310,8 +312,9 @@ class Go2Env(DirectRLEnv):
         extras = dict()
         for key in self._episode_sums.keys():
             episodic_sum_avg = torch.mean(self._episode_sums[key][env_ids])
-            extras["Episode_Reward/" + key] = episodic_sum_avg / self.max_episode_length_s
+            extras["Episode_Reward/" + key] = episodic_sum_avg
             self._episode_sums[key][env_ids] = 0.0
+        extras["Num_env_resets"] = len(env_ids)
         self.extras["log"] = dict()
         self.extras["log"].update(extras)
         extras = dict()
