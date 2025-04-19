@@ -481,7 +481,7 @@ class Workspace(BaseWorkspace[Config]):
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")
 def main(cfg: omgcf.DictConfig) -> None:
-    env_cfg, _ = register_task_to_hydra(args_cli.task, 'rsl_rl_cfg_entry_point')
+    env_cfg, _ = register_task_to_hydra(args_cli.task, '')
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.train()
