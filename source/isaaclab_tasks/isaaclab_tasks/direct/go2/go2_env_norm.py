@@ -236,14 +236,16 @@ class Go2NormEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
-        net_contact_forces = self._contact_sensor.data.net_forces_w_history  # type: ignore
-        died = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1)
-        died2 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._other_id], dim=-1), dim=1)[0] > 1.0, dim=1)
-        died3 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._thigh_ids], dim=-1), dim=1)[0] > 1.0, dim=1)
-        died4 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._calf_ids], dim=-1), dim=1)[0] > 1.0, dim=1)
-        died = died | died2
-        died = died | died3
-        died = died | died4
+        died = torch.zeros_like(time_out)
+        if self.use_termination:
+            net_contact_forces = self._contact_sensor.data.net_forces_w_history  # type: ignore
+            died = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._base_id], dim=-1), dim=1)[0] > 1.0, dim=1)
+            died2 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._other_id], dim=-1), dim=1)[0] > 1.0, dim=1)
+            died3 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._thigh_ids], dim=-1), dim=1)[0] > 1.0, dim=1)
+            died4 = torch.any(torch.max(torch.norm(net_contact_forces[:, :, self._calf_ids], dim=-1), dim=1)[0] > 1.0, dim=1)
+            died = died | died2
+            died = died | died3
+            died = died | died4
         return died, time_out
 
     def _reset_idx(self, env_ids: torch.Tensor | None):

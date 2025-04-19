@@ -6,7 +6,7 @@ defaults:
 
 append_goal_to_observation: True
 uncertainty: True
-eval_every_steps: 1000
+eval_every_steps: 5000
 use_wandb: true
 seed: 0
 experiment: go2_Qreg
