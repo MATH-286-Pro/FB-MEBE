@@ -420,6 +420,8 @@ class Workspace(BaseWorkspace[Config]):
                                  "step": self.global_step,
                                  },
                                 ty='eval')
+        for k, v in total_reward_dict.items():
+            k = k.replace('Step','Episode')
         self.logger.log_metrics(total_reward_dict, ty='eval')
         self.eval_video_recorder.close()
         self.reset_task()
