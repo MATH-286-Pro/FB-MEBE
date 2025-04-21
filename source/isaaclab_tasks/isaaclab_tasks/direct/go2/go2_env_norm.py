@@ -151,7 +151,7 @@ class Go2NormEnv(DirectRLEnv):
         ang_vel_z_error = torch.abs(self._commands[:, 2] - self._robot.data.root_ang_vel_b[:, 2])
         ang_vel_z_rew = torch.exp(-torch.square(ang_vel_z_error / 0.2))
 
-        # pose
+        # pose (base height)
         lin_z_error = torch.abs(self._robot.data.root_pos_w[:, 2] - 0.28)
         lin_z_rew = torch.exp(-torch.square(lin_z_error / 0.1))
 
@@ -160,11 +160,11 @@ class Go2NormEnv(DirectRLEnv):
         ang_xy_error = torch.norm(self._robot.data.projected_gravity_b - target_gravity_b, dim=1)
         ang_xy_rew = torch.exp(-torch.square(ang_xy_error / 0.1))
 
-        lin_vel_z_error = torch.abs(self._robot.data.root_lin_vel_b[:, 2])
-        lin_vel_z_rew = torch.exp(-torch.square(lin_vel_z_error / 0.2))
+        # lin_vel_z_error = torch.abs(self._robot.data.root_lin_vel_b[:, 2])
+        # lin_vel_z_rew = torch.exp(-torch.square(lin_vel_z_error / 0.2))
 
-        ang_vel_xy_error = torch.norm(self._robot.data.root_ang_vel_b[:, :2], dim=1)
-        ang_vel_xy_rew = torch.exp(-torch.square(ang_vel_xy_error / 2.0))
+        # ang_vel_xy_error = torch.norm(self._robot.data.root_ang_vel_b[:, :2], dim=1)
+        # ang_vel_xy_rew = torch.exp(-torch.square(ang_vel_xy_error / 2.0))
 
         # regularization
         action_rate = torch.norm(self._actions - self._previous_actions, dim=1)
@@ -173,15 +173,17 @@ class Go2NormEnv(DirectRLEnv):
         joint_torques = torch.norm(self._robot.data.applied_torque, dim=1)
         joint_torques_rew = torch.exp(-torch.square(joint_torques / 20))
 
-        zero_command = torch.norm(self._commands, dim=1) < 0.1
-        foot_pos_z = self._robot.data.body_pos_w[:, self._feet_ids, 2]
-        foot_height_error = torch.square(foot_pos_z - 0.10)
-        foot_vel_xy = self._robot.data.body_vel_w[:, self._feet_ids, :2]
-        foot_vel_xy_square = torch.square(torch.norm(foot_vel_xy, dim=-1))
-        foot_clearance_error = torch.sum(foot_height_error * foot_vel_xy_square, dim=1)
-        foot_clearance = 1.0 * zero_command + torch.exp(-torch.square(foot_clearance_error / 0.01)) * ~zero_command
+        zero_command = torch.norm(self._commands[:, :3], dim=1) < 0.1
+        # foot_pos_z = self._robot.data.body_pos_w[:, self._feet_ids, 2]
+        # foot_height_error = torch.square(foot_pos_z - 0.10)
+        # foot_vel_xy = self._robot.data.body_vel_w[:, self._feet_ids, :2]
+        # foot_vel_xy_square = torch.square(torch.norm(foot_vel_xy, dim=-1))
+        # foot_clearance_error = torch.sum(foot_height_error * foot_vel_xy_square, dim=1)
+        # foot_clearance = 1.0 * zero_command + torch.exp(-torch.square(foot_clearance_error / 0.01)) * ~zero_command
 
+        # if currently in contact + contact happen less than (dt) seconds ago
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]
+        # time spent in the air, before the last contact (if currently in the air it will still account for the prev )
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]
         air_time = torch.sum((last_air_time) * first_contact, dim=1)
         air_time_rew = torch.sigmoid(10 * air_time) * ~zero_command + 1.0 * zero_command
@@ -214,25 +216,6 @@ class Go2NormEnv(DirectRLEnv):
         }
 
         return task_rewards, regularization_rewards
-
-    def _get_reg_locomotion_rewards(self) -> dict[str, torch.Tensor]:
-        # joint torques
-        joint_torques = torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
-        # joint acceleration
-        joint_accel = torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
-        # action rate
-        action_rate = torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
-        # flat orientation
-        flat_orientation = torch.sum(torch.square(self._robot.data.projected_gravity_b[:, :2]), dim=1)
-
-        rewards = {
-            "dof_torques_l2": joint_torques * self.cfg.joint_torque_reward_scale * self.step_dt,
-            "dof_acc_l2": joint_accel * self.cfg.joint_accel_reward_scale * self.step_dt,
-            "action_rate_l2": action_rate * self.cfg.action_rate_reward_scale * self.step_dt,
-            "flat_orientation_l2": flat_orientation * self.cfg.flat_orientation_reward_scale * self.step_dt,
-
-        }
-        return rewards
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         time_out = self.episode_length_buf >= self.max_episode_length - 1
