@@ -93,7 +93,7 @@ class RolloutStorage:
         self.step = 0
 
     def mini_batch_generator(self, mini_batch_size=256, num_epochs=8):
-        assert not (self.observations[-1] == torch.zeros_like(self.observations[-1])).all(), 'Last observation is zero'
+        assert not (self.observations == 0).all(dim=-1).any(), 'There is at least one all-zero observation vector'
         # indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
 
         observations = self.observations.flatten(0, 1)
