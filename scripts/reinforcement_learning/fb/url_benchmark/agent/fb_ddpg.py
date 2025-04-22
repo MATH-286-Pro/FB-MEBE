@@ -187,7 +187,7 @@ class FBDDPGAgent:
 
     def init_meta(self, obs: torch.Tensor) -> dict:
         if self.cfg.uncertainty:
-            split_size = 200
+            split_size = 512
             if obs.shape[0] > split_size:
                 meta = defaultdict(torch.Tensor)
                 for obs_chunk in obs.split(split_size):
@@ -441,7 +441,7 @@ class FBDDPGAgent:
         metrics: tp.Dict[str, float] = {}
 
         average_meter = defaultdict(AverageMeter)
-        generator = replay_loader.mini_batch_generator(mini_batch_size=512, num_epochs=self.cfg.epoch_repeats)  # TODO update numbers?
+        generator = replay_loader.mini_batch_generator(mini_batch_size=self.cfg.batch_size, num_epochs=self.cfg.epoch_repeats)  # TODO update numbers?
         for batch in generator:
             # batch = batch.to(self.cfg.device)
 

@@ -9,13 +9,13 @@ uncertainty: True
 eval_every_steps: 5000
 use_wandb: true
 seed: 0
-experiment: go2_Qreg
+experiment: final_debug_go2norm_nocritic
 discount: 0.98
 num_train_steps: 150000
 save_video: False
 
 agent:
-  batch_size: 256
+  batch_size: 1024
   z_dim: 50
   num_inference_steps: 10000
   mix_ratio: 0.3
@@ -25,7 +25,7 @@ agent:
   num_z_samples: 100
   critic_reg: false
   coef_critic_reg: 100
-  epoch_repeats: 4
+  epoch_repeats: 5
 
 num_eval_episodes: 10
 hydra:
