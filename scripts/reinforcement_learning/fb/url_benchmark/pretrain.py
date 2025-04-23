@@ -193,7 +193,7 @@ class BaseWorkspace(tp.Generic[C]):
         utils.set_seed_everywhere(cfg.seed)
         if not torch.cuda.is_available():
             if cfg.device != "cpu":
-                logger.warning(f"Falling back to cpu as {cfg.device} is not available")
+                logger.warning(f"\n***\nFalling back to cpu as {cfg.device} is not available\n***\n")
                 cfg.device = "cpu"
                 cfg.agent.device = "cpu"
         self.device = torch.device(cfg.device)
@@ -225,7 +225,7 @@ class BaseWorkspace(tp.Generic[C]):
             ])
             wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
                        config=final_cfg, dir=self.work_dir)  # type: ignore
-        self.num_transitions_per_env = 32
+        self.num_transitions_per_env = 24
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
                                             num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
                                             num_goal=int(self.train_env.goal_spec.shape[0]),  # type: ignore
@@ -352,7 +352,6 @@ class Workspace(BaseWorkspace[Config]):
         metrics = None
 
         while train_until_step(self.global_step):
-
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
                                           obs=time_step.observation)
             # sample action

@@ -198,8 +198,8 @@ class FBDDPGAgent:
                 meta = self.init_curious_meta(obs,)
             return meta
         else:
-            z = self.sample_z(size=obs.shape[0])
-            z = z.squeeze().to(self.cfg.device)
+            z = self.sample_z(size=obs.shape[0], device=self.cfg.device)
+            z = z.squeeze()
             meta = OrderedDict()
             meta['z'] = z
         meta['updated'] = torch.tensor([[True]] * obs.shape[0], device=self.cfg.device)
@@ -225,13 +225,6 @@ class FBDDPGAgent:
                 meta['updated'] = torch.tensor([[True]] * num_obs, device=self.cfg.device)
         else:
             raise not NotImplementedError
-            with torch.no_grad():
-                obs = torch.as_tensor(obs, device=self.cfg.device)
-                z = self.high_expl_actor(obs, std=1.).sample()  # TODO check std
-                if self.cfg.norm_z:
-                    z = math.sqrt(self.cfg.z_dim) * F.normalize(z, dim=0)
-                meta['z'] = z.cpu().numpy()
-                meta['updated'] = True
         return meta
 
     def update_meta(
@@ -443,8 +436,6 @@ class FBDDPGAgent:
         average_meter = defaultdict(AverageMeter)
         generator = replay_loader.mini_batch_generator(mini_batch_size=self.cfg.batch_size, num_epochs=self.cfg.epoch_repeats)  # TODO update numbers?
         for batch in generator:
-            # batch = batch.to(self.cfg.device)
-
             obs = batch.obs
             goal = batch.goal
             action = batch.action
@@ -495,9 +486,6 @@ class FBDDPGAgent:
             if self.cfg.critic_reg:
                 metrics.update(self.update_Qreg(obs=obs, action=action, discount=discount,
                                                 next_obs=next_obs, z=z, rew=rew))
-            # update high expl actor
-            if self.cfg.uncertainty and not self.cfg.sampling:
-                metrics.update(self.update_high_expl_actor(obs, step))
 
             # update actor
             metrics.update(self.update_actor(obs, z, step))

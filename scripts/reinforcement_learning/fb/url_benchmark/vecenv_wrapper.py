@@ -238,7 +238,7 @@ class FBVecEnvWrapper(VecEnv):
 
     def step(self, actions: torch.Tensor) -> tuple[ExtendedTimeStep, dict]:
         # record step information
-        actions = torch.tensor(actions, device=self.device)
+        # actions = torch.tensor(actions, device=self.device)
         next_obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
         # compute dones for compatibility with RSL-RL
         dones = (terminated | truncated).to(dtype=torch.long)
