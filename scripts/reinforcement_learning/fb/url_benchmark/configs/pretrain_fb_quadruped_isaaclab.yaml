@@ -9,13 +9,13 @@ uncertainty: True
 eval_every_steps: 5000
 use_wandb: true
 seed: 0
-experiment: final_debug_go2norm_nocritic
+experiment: go2norm_nocritic
 discount: 0.98
 num_train_steps: 150000
 save_video: False
 
 agent:
-  batch_size: 1024
+  batch_size: 2048
   z_dim: 50
   num_inference_steps: 10000
   mix_ratio: 0.3
