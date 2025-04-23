@@ -160,6 +160,7 @@ class Go2NormEnv(DirectRLEnv):
         ang_xy_error = torch.norm(self._robot.data.projected_gravity_b - target_gravity_b, dim=1)
         ang_xy_rew = torch.exp(-torch.square(ang_xy_error / 0.1))
 
+
         # lin_vel_z_error = torch.abs(self._robot.data.root_lin_vel_b[:, 2])
         # lin_vel_z_rew = torch.exp(-torch.square(lin_vel_z_error / 0.2))
 
@@ -185,7 +186,8 @@ class Go2NormEnv(DirectRLEnv):
         first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_ids]
         # time spent in the air, before the last contact (if currently in the air it will still account for the prev )
         last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_ids]
-        air_time = torch.sum((last_air_time) * first_contact, dim=1)
+        # air_time = torch.sum((last_air_time) * first_contact, dim=1)
+        air_time = torch.sum(last_air_time, dim=1)
         air_time_rew = torch.sigmoid(10 * air_time) * ~zero_command + 1.0 * zero_command
 
         task_rewards = {

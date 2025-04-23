@@ -488,6 +488,7 @@ def main(cfg: omgcf.DictConfig) -> None:
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.train()
+    simulation_app.close()
 
 
 if __name__ == '__main__':
