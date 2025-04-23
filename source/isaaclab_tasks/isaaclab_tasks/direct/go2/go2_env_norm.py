@@ -38,7 +38,7 @@ class Go2NormEnv(DirectRLEnv):
         self.desired_velocity = torch.tensor([0.5, 0, 0], device=self.device)
         self.desired_base_tilt = torch.tensor([0, 0, -1], device=self.device)
         self.goal_space_type = "basic"
-        self.task_reward = "reg_locomotion"  # make this default for training with regularizer
+        self.task_reward = "locomotion"  # make this default for training with regularizer
 
         # Logging
         self._episode_sums = {
