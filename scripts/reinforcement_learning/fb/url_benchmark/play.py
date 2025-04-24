@@ -65,7 +65,6 @@ import typing as tp
 import warnings
 from pathlib import Path
 import time
-from collections import defaultdict
 warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 
@@ -91,6 +90,8 @@ from url_benchmark.rollout_storage import RolloutStorage
 from url_benchmark.video_record import VideoRecorder
 from url_benchmark import agent as agents
 from datetime import datetime
+from collections import defaultdict
+
 
 logger = logging.getLogger(__name__)
 # torch.backends.cudnn.benchmark = True
@@ -149,6 +150,8 @@ class Config:
     eval_every_steps: int = 10000
     load_replay_buffer: tp.Optional[str] = None
     save_train_video: bool = False
+    imitate: bool =  False
+    load_imitate_data: str = ''
 
 
 #  Name the Config as "workspace_config".
@@ -218,12 +221,6 @@ class BaseWorkspace(tp.Generic[C]):
         final_cfg.update(dict(fb_cfg))
         with open(f"{self.work_dir}/config.yaml", "w") as f:
             yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
-        if cfg.use_wandb:
-            exp_name = '_'.join([
-                cfg.agent.name, args_cli.task, cfg.experiment
-            ])
-            wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
-                       config=final_cfg, dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 32
         # TODO episode length
         self.eval_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.train_env.max_episode_length, discount=cfg.discount,
@@ -271,17 +268,6 @@ class BaseWorkspace(tp.Generic[C]):
         return env
 
     _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
-
-    def save_checkpoint(self, fp: tp.Union[Path, str], exclude: tp.Sequence[str] = ()) -> None:
-        logger.info(f"Saving checkpoint to {fp}")
-        exclude = list(exclude)
-        assert all(x in self._CHECKPOINTED_KEYS for x in exclude)
-        fp = Path(fp)
-        fp.parent.mkdir(exist_ok=True, parents=True)
-        # this is just a dumb security check to not forget about it
-        payload = {k: self.__dict__[k] for k in self._CHECKPOINTED_KEYS if k not in exclude}
-        with fp.open('wb') as f:
-            torch.save(payload, f, pickle_protocol=4)
 
     def load_checkpoint(self, fp: tp.Union[Path, str], only: tp.Optional[tp.Sequence[str]] = None, exclude: tp.Sequence[str] = ()) -> None:
         """Reloads a checkpoint or part of it
@@ -334,7 +320,10 @@ class Workspace(BaseWorkspace[Config]):
         self.set_task()
         for i in range(100):
             print('eval episode', i)
-            self.collect_eval_data()
+            if not self.cfg.imitate:
+                self.collect_eval_data()
+            self.train_env.unwrapped.use_termination = False
+
             eval_meta = self.init_eval_meta()
             eval_meta['z'] = eval_meta['z'].expand(self.train_env.num_envs, -1)
             self.eval_loader.clear()
@@ -349,7 +338,6 @@ class Workspace(BaseWorkspace[Config]):
                     self.eval_video_recorder.step(self.global_step + self.eval_step)
                     for k, v in extras['rew_dict'].items():
                         total_reward_dict[k] += v.item()
-                    
                     self.eval_step += 1
             total_reward = sum([v for v in total_reward_dict.values()])
             task = arr_to_str(self.train_env.unwrapped.desired_velocity.cpu().numpy())
@@ -360,6 +348,9 @@ class Workspace(BaseWorkspace[Config]):
                                      "step": self.global_step,
                                      },
                                     ty='eval')
+            for k in list(total_reward_dict):
+                new_key = k.replace('Step','Episode')
+                total_reward_dict[new_key] = total_reward_dict.pop(k)
             self.logger.log_metrics(total_reward_dict, ty='eval')
         self.eval_video_recorder.close()
         self.reset_task()
@@ -371,12 +362,11 @@ class Workspace(BaseWorkspace[Config]):
         self.default_uncertainty_ = self.cfg.uncertainty
         self.default_z_every_step = self.agent.cfg.update_z_every_step
 
-        self.train_env.unwrapped.desired_velocity = torch.tensor([0.5, 0.0, 0.0], device=self.device)
+        self.train_env.unwrapped.desired_velocity = torch.tensor([.5, 0.0, 0.0], device=self.device)
         self.train_env.unwrapped.reward_type = "trot"
         self.cfg.uncertainty, self.agent.cfg.uncertainty = False, False
-        self.agent.cfg.update_z_every_step = 1
+        self.agent.cfg.update_z_every_step = 100
         self.train_env.unwrapped.task_reward = "locomotion"  # "base_tilt, upright"
-        self.train_env.unwrapped.use_termination = False
 
     def reset_task(self) -> None:
         if hasattr(self.train_env.unwrapped, 'desired_velocity'):
@@ -400,6 +390,7 @@ class Workspace(BaseWorkspace[Config]):
             print("Attribute does not exist for the environment. Skipping assignment.")
 
     def collect_eval_data(self) -> None:
+        self.train_env.unwrapped.use_termination = True
         self.eval_loader.clear()
         time_step = self.train_env.reset()
         meta = self.agent.init_meta(time_step.observation)
@@ -416,15 +407,22 @@ class Workspace(BaseWorkspace[Config]):
         print('Done collecting data \n')
 
     def init_eval_meta(self):
-        obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim
-        obs = obs.reshape(-1, self.eval_loader.num_goal)  # [num_envs x num_transitions_per_env, goal_dim]
-        rewards = self.eval_loader.rewards[:self.eval_loader.step].reshape(-1, 1)
+        if not self.cfg.imitate:
+            obs = self.eval_loader.next_goals[:self.eval_loader.step]  # num_samples x num_envs x goal_dim
+            obs = obs.reshape(-1, self.eval_loader.num_goal)  # [num_envs x num_transitions_per_env, goal_dim]
+            rewards = self.eval_loader.rewards[:self.eval_loader.step].reshape(-1, 1)
+        else:
+            print('Imitating, Loading data from ', self.cfg.load_imitate_data)
+            data = np.load(self.cfg.load_imitate_data)
+            obs = torch.tensor(data['goals'], device=self.device)
+            rewards = torch.tensor(data['rewards'], device=self.device)
+            rewards = torch.ones_like(rewards)
         return self.agent.infer_meta_from_obs_and_rewards(obs, rewards)
 
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")
 def main(cfg: omgcf.DictConfig) -> None:
-    env_cfg, _ = register_task_to_hydra(args_cli.task, 'rsl_rl_cfg_entry_point')
+    env_cfg, _ = register_task_to_hydra(args_cli.task, '')
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.eval()
