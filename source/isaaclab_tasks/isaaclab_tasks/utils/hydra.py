@@ -16,7 +16,7 @@ try:
 except ImportError:
     raise ImportError("Hydra is not installed. Please install it by running 'pip install hydra-core'.")
 
-from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs import DirectRLEnvCfg
 from isaaclab.envs.utils.spaces import replace_env_cfg_spaces_with_strings, replace_strings_with_env_cfg_spaces
 from isaaclab.utils import replace_slices_with_strings, replace_strings_with_slices
 
@@ -25,7 +25,7 @@ from isaaclab_tasks.utils.parse_cfg import load_cfg_from_registry
 
 def register_task_to_hydra(
     task_name: str, agent_cfg_entry_point: str
-) -> tuple[ManagerBasedRLEnvCfg | DirectRLEnvCfg, dict]:
+) -> tuple[DirectRLEnvCfg, dict]:
     """Register the task configuration to the Hydra configuration store.
 
     This function resolves the configuration file for the environment and agent based on the task's name.

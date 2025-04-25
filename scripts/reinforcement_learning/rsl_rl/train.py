@@ -53,7 +53,6 @@ from rsl_rl.runners import OnPolicyRunner
 
 from isaaclab.envs import (
     DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
 )
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
@@ -71,7 +70,7 @@ torch.backends.cudnn.benchmark = False
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
-def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg , agent_cfg: RslRlOnPolicyRunnerCfg):
+def main(env_cfg: DirectRLEnvCfg , agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)

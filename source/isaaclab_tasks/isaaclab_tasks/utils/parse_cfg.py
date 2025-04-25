@@ -13,7 +13,7 @@ import os
 import re
 import yaml
 
-from isaaclab.envs import DirectRLEnvCfg, ManagerBasedRLEnvCfg
+from isaaclab.envs import DirectRLEnvCfg
 
 
 def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | object:
@@ -98,7 +98,7 @@ def load_cfg_from_registry(task_name: str, entry_point_key: str) -> dict | objec
 
 def parse_env_cfg(
     task_name: str, device: str = "cuda:0", num_envs: int | None = None, use_fabric: bool | None = None
-) -> ManagerBasedRLEnvCfg | DirectRLEnvCfg:
+) -> DirectRLEnvCfg:
     """Parse configuration for an environment and override based on inputs.
 
     Args:
