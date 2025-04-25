@@ -104,7 +104,7 @@ def main():
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
-    print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+    print(f"****\n\n[INFO]: Loading model checkpoint from: {resume_path}\n\n****")
     # load previously trained model
     ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)

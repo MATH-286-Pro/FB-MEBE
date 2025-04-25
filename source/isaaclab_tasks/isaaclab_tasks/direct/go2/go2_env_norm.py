@@ -13,6 +13,7 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 import isaaclab.utils.math as math_utils
+from typing import Tuple, Dict
 
 from .go2_norm_cfg import Go2FlatEnvNormCfg
 
@@ -34,8 +35,8 @@ class Go2NormEnv(DirectRLEnv):
         )
 
         # X/Y linear velocity and yaw angular velocity commands + base_tilt orientation
-        self._commands = torch.zeros(self.num_envs, 6, device=self.device)
-        self.desired_velocity = torch.tensor([0.5, 0, 0], device=self.device)
+        self._commands = torch.zeros(self.num_envs, 3, device=self.device)
+        self.desired_velocity = torch.tensor([0.5, 0, 0.], device=self.device)
         self.desired_base_tilt = torch.tensor([0, 0, -1], device=self.device)
         self.goal_space_type = "basic"
         self.task_reward = "locomotion"  # make this default for training with regularizer
@@ -64,6 +65,12 @@ class Go2NormEnv(DirectRLEnv):
 
         # Set up the environment
         self.use_termination = True
+        obs_test = self._get_observations()
+        assert obs_test['policy'].shape[1] == self.single_observation_space['policy'].shape[0], \
+            f"Observation space mismatch: {obs_test['policy'].shape[1]} != {self.single_observation_space['policy'].shape[0]}"
+        if 'goal' in self.single_observation_space:
+            assert obs_test['goal'].shape[1] == self.single_observation_space['goal'].shape[0], \
+                f"Goal space mismatch: {obs_test['goal'].shape[1]} != {self.single_observation_space['goal'].shape[0]}"
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -131,7 +138,6 @@ class Go2NormEnv(DirectRLEnv):
 
         elif self.task_reward == 'reg_locomotion':
             reward = torch.prod(torch.stack(list(regularization_rewards.values())), dim=0)
-        
         else:
             raise ValueError(f"Unknown reward type: {self.task_reward}")
 
@@ -142,7 +148,7 @@ class Go2NormEnv(DirectRLEnv):
             rew_dict["Step_Reward/" + key] = torch.mean(value)
         return reward, rew_dict
 
-    def _get_locomotion_rewards(self) -> (dict[str, torch.Tensor], dict[str, torch.Tensor]):
+    def _get_locomotion_rewards(self) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         # linear velocity tracking
         # task
         lin_vel_xy_error = torch.norm(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2], dim=1)
@@ -159,7 +165,6 @@ class Go2NormEnv(DirectRLEnv):
         target_gravity_b[:, 2] = -1.0
         ang_xy_error = torch.norm(self._robot.data.projected_gravity_b - target_gravity_b, dim=1)
         ang_xy_rew = torch.exp(-torch.square(ang_xy_error / 0.1))
-
 
         # lin_vel_z_error = torch.abs(self._robot.data.root_lin_vel_b[:, 2])
         # lin_vel_z_rew = torch.exp(-torch.square(lin_vel_z_error / 0.2))
@@ -246,7 +251,9 @@ class Go2NormEnv(DirectRLEnv):
         self._previous_actions[env_ids] = 0.0
         # Sample new commands
         # self._commands[env_ids] = torch.zeros_like(self._commands[env_ids]).uniform_(-1.0, 1.0)
-        self._commands[env_ids] = torch.ones_like(self._commands[env_ids]) * torch.cat((self.desired_velocity, self.desired_base_tilt), dim=0)
+        # self._commands[env_ids] = torch.ones_like(self._commands[env_ids]) * torch.cat((self.desired_velocity, self.desired_base_tilt), dim=0)
+        self._commands[env_ids] = torch.ones_like(self._commands[env_ids]) * self.desired_velocity
+
         # Reset robot state
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
