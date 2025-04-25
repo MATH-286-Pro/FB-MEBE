@@ -13,6 +13,7 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sensors import ContactSensor
 import isaaclab.utils.math as math_utils
+from rsl_rl.modules import EmpiricalNormalization
 from typing import Tuple, Dict
 
 from .go2_norm_cfg import Go2FlatEnvNormCfg
@@ -21,7 +22,7 @@ from .go2_norm_cfg import Go2FlatEnvNormCfg
 class Go2NormEnv(DirectRLEnv):
     cfg: Go2FlatEnvNormCfg
 
-    def __init__(self, cfg: Go2FlatEnvNormCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: Go2FlatEnvNormCfg, render_mode: str | None = None, normalize_observation=False, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         # reward selection
@@ -40,7 +41,6 @@ class Go2NormEnv(DirectRLEnv):
         self.desired_base_tilt = torch.tensor([0, 0, -1], device=self.device)
         self.goal_space_type = "basic"
         self.task_reward = "locomotion"  # make this default for training with regularizer
-
         # Logging
         self._episode_sums = {
             key: torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
@@ -65,12 +65,17 @@ class Go2NormEnv(DirectRLEnv):
 
         # Set up the environment
         self.use_termination = True
+        self.obs_normalizer = torch.nn.Identity().to(self.device)  # set first to identity for get_obs to work
         obs_test = self._get_observations()
         assert obs_test['policy'].shape[1] == self.single_observation_space['policy'].shape[0], \
             f"Observation space mismatch: {obs_test['policy'].shape[1]} != {self.single_observation_space['policy'].shape[0]}"
         if 'goal' in self.single_observation_space:
             assert obs_test['goal'].shape[1] == self.single_observation_space['goal'].shape[0], \
                 f"Goal space mismatch: {obs_test['goal'].shape[1]} != {self.single_observation_space['goal'].shape[0]}"
+
+        if normalize_observation:
+            self.obs_normalizer = EmpiricalNormalization(shape=self.single_observation_space['policy'].shape[0],
+                                                         until=int(1.0e8)).to(self.device)
 
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot)
@@ -113,8 +118,8 @@ class Go2NormEnv(DirectRLEnv):
             ],
             dim=-1,
         )
+        obs = self.obs_normalizer(obs)
         goal = self._get_goal(obs)
-
         observations = {"policy": obs}
         observations["goal"] = goal
         return observations

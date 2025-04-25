@@ -45,9 +45,7 @@ import torch
 import yaml
 
 from isaaclab.envs import (
-    DirectRLEnvCfg,
-    ManagerBasedRLEnvCfg,
-)
+    DirectRLEnvCfg)
 from vecenv_wrapper import FBVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
@@ -126,8 +124,6 @@ class Config:
     num_eval_episodes: int = 10
     custom_reward: tp.Optional[str] = None  # activates custom eval if not None
     final_tests: int = 10
-    # checkpoint # num episode * length of episode
-    snapshot_at: tp.Tuple[int, ...] = (0, 250, 500, 1000, 1500, 2000)
     checkpoint_every: int = 40000
     load_model: tp.Optional[str] = None
     # training
@@ -149,6 +145,7 @@ class Config:
     eval_every_steps: int = 10000
     load_replay_buffer: tp.Optional[str] = None
     save_train_video: bool = False
+    empirical_obs_normalization: bool = True
 
 
 #  Name the Config as "workspace_config".
@@ -161,7 +158,7 @@ ConfigStore.instance().store(name="workspace_config", node=Config)
 
 def make_agent(
     obs_type: str, obs_spec, goal_spec, action_spec, num_expl_steps: int, cfg: omgcf.DictConfig
-) -> tp.Union[agents.FBDDPGAgent]:
+) -> agents.FBDDPGAgent:
     cfg.obs_type = obs_type
     cfg.obs_shape = obs_spec.shape
     cfg.goal_shape = goal_spec.shape
@@ -198,7 +195,7 @@ class BaseWorkspace(tp.Generic[C]):
                 cfg.agent.device = "cpu"
         self.device = torch.device(cfg.device)
 
-        self.train_env = self._make_env(env_cfg)
+        self.train_env = self._make_env(env_cfg, normalize_observation=cfg.empirical_obs_normalization)
         # create agent
         self.agent = make_agent(cfg.obs_type,
                                 self.train_env.observation_spec,
@@ -210,7 +207,7 @@ class BaseWorkspace(tp.Generic[C]):
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
-        
+
         # save (reduced) agent config and env_cfg
         if not isinstance(env_cfg, dict):
             save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
@@ -239,7 +236,6 @@ class BaseWorkspace(tp.Generic[C]):
                                           num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
                                           num_z=cfg.agent.z_dim,
                                           device=str(self.device))
-
         self.timer = utils.Timer()
         self.global_step = 0
         self.global_episode = 0
@@ -253,7 +249,7 @@ class BaseWorkspace(tp.Generic[C]):
         elif cfg.load_model is not None:
             self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
 
-    def _make_env(self, env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg):
+    def _make_env(self, env_cfg: DirectRLEnvCfg, normalize_observation: bool = False):
         """Train with RSL-RL agent."""
         # override configurations with non-hydra CLI arguments
         # agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
@@ -264,7 +260,7 @@ class BaseWorkspace(tp.Generic[C]):
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
         # create isaac environment
-        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+        env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None, normalize_observation=normalize_observation)
         if args_cli.video:
             print("[INFO] Recording videos during training.")
 
@@ -288,6 +284,7 @@ class BaseWorkspace(tp.Generic[C]):
         assert isinstance(self.replay_loader, RolloutStorage), "Is this buffer designed for checkpointing?"
         # this is just a dumb security check to not forget about it
         payload = {k: self.__dict__[k] for k in self._CHECKPOINTED_KEYS if k not in exclude}
+        payload['obs_normalizer'] = self.train_env.obs_normalizer.state_dict()
         with fp.open('wb') as f:
             torch.save(payload, f, pickle_protocol=4)
 
@@ -319,6 +316,10 @@ class BaseWorkspace(tp.Generic[C]):
             logger.info("Reloading %s from %s", name, fp)
             if name == "agent":
                 self.agent.init_from(val)
+            elif name == "obs_normalizer":
+                self.train_env.obs_normalizer.load_state_dict(val)
+                self.train_env.obs_normalizer.eval()
+
             else:
                 assert hasattr(self, name)
                 setattr(self, name, val)
@@ -350,6 +351,7 @@ class Workspace(BaseWorkspace[Config]):
         time_step = self.train_env.reset()
         meta = self.agent.init_meta(time_step.observation)
         metrics = None
+        self.train_env.obs_normalizer.train()
 
         while train_until_step(self.global_step):
             meta = self.agent.update_meta(meta, self.train_env.episode_length_buf,
@@ -394,6 +396,7 @@ class Workspace(BaseWorkspace[Config]):
         self.train_env.close()
 
     def eval(self) -> None:
+        self.train_env.obs_normalizer.eval()
         self.set_task()
         self.collect_eval_data()
         eval_meta = self.init_eval_meta()
@@ -420,11 +423,12 @@ class Workspace(BaseWorkspace[Config]):
                                  },
                                 ty='eval')
         for k in list(total_reward_dict):
-            new_key = k.replace('Step','Episode')
+            new_key = k.replace('Step', 'Episode')
             total_reward_dict[new_key] = total_reward_dict.pop(k)
         self.logger.log_metrics(total_reward_dict, ty='eval')
         self.eval_video_recorder.close()
         self.reset_task()
+        self.train_env.obs_normalizer.train()
 
     def set_task(self) -> None:
         self.default_desired_vel = self.train_env.unwrapped.desired_velocity

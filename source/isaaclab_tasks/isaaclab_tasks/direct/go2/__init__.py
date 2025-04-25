@@ -34,5 +34,6 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.go2_env_norm:Go2FlatEnvNormCfg",
         # "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_flat_ppo_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:Go2FlatPPORunnerCfg",
+        "normalize_observation": False,
     },
 )
