@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         "--lib-name",
         type=str,
         default="rsl_rl",
-        choices=["rsl_rl", "skrl", "rl_games", "sb3"],
+        choices=["rsl_rl"],
         help="The name of the library to use for training.",
     )
     return parser.parse_args()

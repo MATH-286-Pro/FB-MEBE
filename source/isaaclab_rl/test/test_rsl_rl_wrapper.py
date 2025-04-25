@@ -21,8 +21,6 @@ import unittest
 import carb
 import omni.usd
 
-from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
-
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
@@ -72,9 +70,6 @@ class TestRslRlVecEnvWrapper(unittest.TestCase):
                     env_cfg = parse_env_cfg(task_name, device=self.device, num_envs=self.num_envs)
                     # create environment
                     env = gym.make(task_name, cfg=env_cfg)
-                    # convert to single-agent instance if required by the RL algorithm
-                    if isinstance(env.unwrapped, DirectMARLEnv):
-                        env = multi_agent_to_single_agent(env)
                     # wrap environment
                     env = RslRlVecEnvWrapper(env)
                 except Exception as e:
