@@ -1,0 +1,8 @@
+defaults:
+  - workspace_config
+  - agent: fb_ddpg
+  - _self_
+
+hydra:
+  run:
+    dir: ./exp_local/${agent.name}

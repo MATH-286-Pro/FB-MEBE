@@ -50,7 +50,7 @@ from vecenv_wrapper import FBVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils.hydra import register_task_to_hydra, hydra_task_config
-
+from isaaclab_tasks.utils import parse_env_cfg
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
@@ -118,7 +118,6 @@ class Config:
     obs_type: str = "states"  # [states, pixels]
     discount: float = 0.99
     future: float = 0.99  # discount of future sampling, future=1 means no future sampling
-    goal_space: tp.Optional[str] = None
     append_goal_to_observation: bool = False
     # eval
     num_eval_episodes: int = 10
@@ -145,7 +144,7 @@ class Config:
     eval_every_steps: int = 10000
     load_replay_buffer: tp.Optional[str] = None
     save_train_video: bool = False
-    empirical_obs_normalization: bool = True
+    empirical_obs_normalization: bool = False
 
 
 #  Name the Config as "workspace_config".
@@ -186,6 +185,16 @@ class BaseWorkspace(tp.Generic[C]):
         logger.info(f'Workspace: {self.work_dir}')
         logger.info(f'Running code in : {Path(__file__).parent.resolve().absolute()}')
 
+        self._checkpoint_filepath = self.model_dir / "models" / "latest.pt"
+        # This is for continuing training in case workdir is the same
+        if self._checkpoint_filepath.exists():
+            # self.load_checkpoint(self._checkpoint_filepath)
+            utils.load_config(self._checkpoint_filepath, cfg, env_cfg)
+        # This is for loading an existing model
+        elif cfg.load_model is not None:
+            # self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
+            utils.load_config(cfg.load_model, cfg, env_cfg)
+
         self.cfg = cfg
         utils.set_seed_everywhere(cfg.seed)
         if not torch.cuda.is_available():
@@ -204,24 +213,18 @@ class BaseWorkspace(tp.Generic[C]):
                                 cfg.num_seed_steps,
                                 cfg.agent)
 
+        self.global_step = 0
+        # This is for continuing training in case workdir is the same
+        if self._checkpoint_filepath.exists():
+            self.load_checkpoint(self._checkpoint_filepath)
+        # This is for loading an existing model
+        elif cfg.load_model is not None:
+            self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
+
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
 
-        # save (reduced) agent config and env_cfg
-        if not isinstance(env_cfg, dict):
-            save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
-        fb_cfg = omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-        final_cfg = dict(save_env_cfg)
-        final_cfg.update(dict(fb_cfg))
-        with open(f"{self.work_dir}/config.yaml", "w") as f:
-            yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
-        if cfg.use_wandb:
-            exp_name = '_'.join([
-                cfg.experiment, date
-            ])
-            wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
-                       config=final_cfg, dir=self.work_dir)  # type: ignore
         self.num_transitions_per_env = 24
         self.replay_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.num_transitions_per_env, discount=cfg.discount,
                                             num_obs=int(self.train_env.observation_spec.shape[0]),  # type: ignore
@@ -236,18 +239,19 @@ class BaseWorkspace(tp.Generic[C]):
                                           num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
                                           num_z=cfg.agent.z_dim,
                                           device=str(self.device))
-        self.timer = utils.Timer()
-        self.global_step = 0
-        self.global_episode = 0
-        self.eval_rewards_history: tp.List[float] = []
-        self.eval_dist_history: tp.List[float] = []
-        self._checkpoint_filepath = self.model_dir / "models" / "latest.pt"
-        # This is for continuing training in case workdir is the same
-        if self._checkpoint_filepath.exists():
-            self.load_checkpoint(self._checkpoint_filepath)
-        # This is for loading an existing model
-        elif cfg.load_model is not None:
-            self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
+        # save (reduced) agent config and env_cfg
+        if not isinstance(env_cfg, dict):
+            save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
+        fb_cfg = omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
+        final_cfg = dict(save_env_cfg)
+        final_cfg.update(dict(fb_cfg))
+        utils.dump_yaml(os.path.join(self.work_dir, "config.yaml"), final_cfg)
+        if cfg.use_wandb:
+            exp_name = '_'.join([
+                cfg.experiment, date
+            ])
+            wandb.init(project="fb_hw", entity="fb_hw_coll", group=cfg.experiment, name=exp_name,  # mode="disabled",
+                       config=final_cfg, dir=self.work_dir)  # type: ignore
 
     def _make_env(self, env_cfg: DirectRLEnvCfg, normalize_observation: bool = False):
         """Train with RSL-RL agent."""
@@ -273,7 +277,7 @@ class BaseWorkspace(tp.Generic[C]):
 
         return env
 
-    _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
+    _CHECKPOINTED_KEYS = ('agent', 'global_step', "replay_loader")
 
     def save_checkpoint(self, fp: tp.Union[Path, str], exclude: tp.Sequence[str] = ()) -> None:
         logger.info(f"Saving checkpoint to {fp}")
@@ -323,8 +327,8 @@ class BaseWorkspace(tp.Generic[C]):
             else:
                 assert hasattr(self, name)
                 setattr(self, name, val)
-                if name == "global_episode":
-                    logger.warning(f"Reloaded agent at global episode {self.global_episode}")
+                if name == "global_step":
+                    logger.warning(f"Reloaded agent at global step {self.global_step}")
 
 
 class Workspace(BaseWorkspace[Config]):
@@ -389,7 +393,7 @@ class Workspace(BaseWorkspace[Config]):
 
             # save checkpoint to reload
             if self.global_step > 100 and not self.global_step % self.cfg.checkpoint_every:
-                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_ep{self.global_episode}_step{self.global_step}.pt'), exclude=["replay_loader"])
+                self.save_checkpoint(self._checkpoint_filepath.with_name(f'snapshot_step{self.global_step}.pt'), exclude=["replay_loader"])
             self.global_step += 1
 
         self.save_checkpoint(self._checkpoint_filepath, exclude=["replay_loader"])  # make sure we save the final checkpoint
@@ -487,7 +491,9 @@ class Workspace(BaseWorkspace[Config]):
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")
 def main(cfg: omgcf.DictConfig) -> None:
-    env_cfg, _ = register_task_to_hydra(args_cli.task, '')
+    env_cfg = parse_env_cfg(
+        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs,
+    )
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.train()

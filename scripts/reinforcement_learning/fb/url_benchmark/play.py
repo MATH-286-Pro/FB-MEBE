@@ -21,6 +21,7 @@ parser.add_argument("--num_envs", type=int, default=100, help="Number of environ
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
+parser.add_argument("--play_cfg", type=str, default=None, help="play config file")
 
 # # append RSL-RL cli arguments
 # cli_args.add_rsl_rl_args(parser)
@@ -51,7 +52,7 @@ from isaaclab.envs import (
 from vecenv_wrapper import FBVecEnvWrapper
 
 import isaaclab_tasks  # noqa: F401
-from isaaclab_tasks.utils.hydra import register_task_to_hydra, hydra_task_config
+from isaaclab_tasks.utils import parse_env_cfg
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -120,7 +121,6 @@ class Config:
     obs_type: str = "states"  # [states, pixels]
     discount: float = 0.99
     future: float = 0.99  # discount of future sampling, future=1 means no future sampling
-    goal_space: tp.Optional[str] = None
     append_goal_to_observation: bool = False
     # eval
     num_eval_episodes: int = 10
@@ -149,7 +149,7 @@ class Config:
     save_train_video: bool = False
     imitate: bool = False
     load_imitate_data: str = ''
-    empirical_obs_normalization: bool = True
+    empirical_obs_normalization: bool = False
 
 
 #  Name the Config as "workspace_config".
@@ -173,6 +173,11 @@ def make_agent(
 
 C = tp.TypeVar("C", bound=Config)
 
+# This script first loads the default config (Config above) by using default base_config.yaml, then
+# 1) using the --load_cfg argument, loads the play_config.yaml file, which contains the path to the loaded model and respective config.
+# 2) overrides the loaded model config with the play config (e.g. num_inference_steps, num_eval episodes...)
+# We ran as follows:
+#python scripts/reinforcement_learning/fb/url_benchmark/play.py --task=Isaac-Velocity-Flat-Unitree-Go2-Direct-Norm-v0 --num_envs 100 --headless --video --play_cfg play_fb_quadruped_isaaclab
 
 class BaseWorkspace(tp.Generic[C]):
     def __init__(self, cfg: C, env_cfg) -> None:
@@ -189,11 +194,14 @@ class BaseWorkspace(tp.Generic[C]):
         logger.info(f'Workspace: {self.work_dir}')
         logger.info(f'Running code in : {Path(__file__).parent.resolve().absolute()}')
 
+        self._checkpoint_filepath = self.model_dir / "models" / "latest.pt"
+        # Load config: This is for loading an existing model
+        utils.load_config(args_cli.play_cfg, cfg, env_cfg)
         self.cfg = cfg
         utils.set_seed_everywhere(cfg.seed)
         if not torch.cuda.is_available():
             if cfg.device != "cpu":
-                logger.warning(f"Falling back to cpu as {cfg.device} is not available")
+                logger.warning(f"\n***\nFalling back to cpu as {cfg.device} is not available\n***\n")
                 cfg.device = "cpu"
                 cfg.agent.device = "cpu"
         self.device = torch.device(cfg.device)
@@ -207,18 +215,13 @@ class BaseWorkspace(tp.Generic[C]):
                                 cfg.num_seed_steps,
                                 cfg.agent)
 
+        self.global_step = 0
+        # This is for loading an existing model
+        self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
         # create logger
         self.logger = Logger(self.work_dir,
                              use_wandb=cfg.use_wandb)
 
-        # save (reduced) agent config and env_cfg
-        if not isinstance(env_cfg, dict):
-            save_env_cfg = utils.class_to_dict(env_cfg, ignore=IGNORE_CONFIG)
-        fb_cfg = omgcf.OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
-        final_cfg = dict(save_env_cfg)
-        final_cfg.update(dict(fb_cfg))
-        with open(f"{self.work_dir}/config.yaml", "w") as f:
-            yaml.dump(final_cfg, f, default_flow_style=False, sort_keys=False)
         self.num_transitions_per_env = 32
         # TODO episode length
         self.eval_loader = RolloutStorage(num_envs=env_cfg.scene.num_envs, num_transitions_per_env=self.train_env.max_episode_length, discount=cfg.discount,
@@ -227,19 +230,6 @@ class BaseWorkspace(tp.Generic[C]):
                                           num_actions=int(self.train_env.action_spec.shape[0]),  # type: ignore
                                           num_z=cfg.agent.z_dim,
                                           device=str(self.device))
-
-        self.timer = utils.Timer()
-        self.global_step = 0
-        self.global_episode = 0
-        self.eval_rewards_history: tp.List[float] = []
-        self.eval_dist_history: tp.List[float] = []
-        self._checkpoint_filepath = self.model_dir / "models" / "latest.pt"
-        # This is for continuing training in case workdir is the same
-        if self._checkpoint_filepath.exists():
-            self.load_checkpoint(self._checkpoint_filepath)
-        # This is for loading an existing model
-        elif cfg.load_model is not None:
-            self.load_checkpoint(cfg.load_model, exclude=["replay_loader"])
 
     def _make_env(self, env_cfg: DirectRLEnvCfg, normalize_observation: bool = False):
         """Train with RSL-RL agent."""
@@ -265,7 +255,7 @@ class BaseWorkspace(tp.Generic[C]):
 
         return env
 
-    _CHECKPOINTED_KEYS = ('agent', 'global_step', 'global_episode', "replay_loader")
+    _CHECKPOINTED_KEYS = ('agent', 'global_step', "replay_loader")
 
     def load_checkpoint(self, fp: tp.Union[Path, str], only: tp.Optional[tp.Sequence[str]] = None, exclude: tp.Sequence[str] = ()) -> None:
         """Reloads a checkpoint or part of it
@@ -277,7 +267,7 @@ class BaseWorkspace(tp.Generic[C]):
         exclude: sequence of str
             does not reload the provided keys
         """
-        print(f"loading checkpoint from {fp}")
+        logger.warning(f"\n\nLoading checkpoint from {fp}\n\n")
         fp = Path(fp)
         with fp.open('rb') as f:
             payload = torch.load(f)
@@ -291,19 +281,22 @@ class BaseWorkspace(tp.Generic[C]):
         assert all(x in self._CHECKPOINTED_KEYS for x in exclude)
         for x in exclude:
             payload.pop(x, None)
+        normalizer_loaded = False
         for name, val in payload.items():
             logger.info("Reloading %s from %s", name, fp)
             if name == "agent":
                 self.agent.init_from(val)
-            elif name == "obs_normalizer":
+            if name == "obs_normalizer":
                 self.train_env.obs_normalizer.load_state_dict(val)
                 self.train_env.obs_normalizer.eval()
+                normalizer_loaded = True
 
             else:
-                assert hasattr(self, name)
-                setattr(self, name, val)
-                if name == "global_episode":
-                    logger.warning(f"Reloaded agent at global episode {self.global_episode}")
+                if not hasattr(self, name):
+                    print(f'Missing {name} attribute')
+                else:
+                    setattr(self, name, val)
+        assert normalizer_loaded == self.cfg.empirical_obs_normalization, 'Either no normalization or no loaded'
 
 
 class Workspace(BaseWorkspace[Config]):
@@ -321,7 +314,7 @@ class Workspace(BaseWorkspace[Config]):
     def eval(self) -> None:
         self.train_env.obs_normalizer.eval()
         self.set_task()
-        for i in range(100):
+        for i in range(self.cfg.num_eval_episodes):
             print('eval episode', i)
             if not self.cfg.imitate:
                 self.collect_eval_data()
@@ -424,7 +417,9 @@ class Workspace(BaseWorkspace[Config]):
 
 @hydra.main(config_path='configs', config_name='base_config', version_base="1.1")
 def main(cfg: omgcf.DictConfig) -> None:
-    env_cfg, _ = register_task_to_hydra(args_cli.task, '')
+    env_cfg = parse_env_cfg(
+        args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs,
+    )
     # calls Config
     workspace = Workspace(cfg, env_cfg)  # type: ignore
     workspace.eval()

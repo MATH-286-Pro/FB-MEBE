@@ -1,37 +1,18 @@
-defaults:
-  - workspace_config
-  - agent: fb_ddpg
-  - _self_
-
-
-append_goal_to_observation: True
-uncertainty: True
-eval_every_steps: 1000
 use_wandb: false
 seed: 0
-experiment: eval_go2_actionscale_0.5
-discount: 0.98
-num_train_steps: 2000010
+experiment: eval
 save_video: False
 # load_model: /home/nuria/phd/isaaclab-fb/exp_cluster/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-v0/03-27_18-41/models/snapshot_ep0_step100000.pt
 # load_model: /home/nuria/phd/isaaclab-fb/exp_cluster/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-v0/04-02_16-34/models/snapshot_ep0_step150000.pt
 # load_model: /home/nuria/phd/isaaclab-fb/exp_cluster/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-v0/04-07_16-35/models/snapshot_ep0_step120000.pt
-# load_model: /home/nuria/phd/isaaclab-fb/exp_cluster/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-v0/04-10_10-08/models/snapshot_ep0_step40000.pt
+# load_model: /home/nuria/phd/isaaclab-fb/exp_local/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-Norm-v0/05-07_13-28/models/snapshot_step104.pt
 load_model: /home/nuria/phd/isaaclab-fb/exp_cluster/fb_ddpg/Isaac-Velocity-Flat-Unitree-Go2-Direct-Norm-v0/04-23_12-31/models/latest.pt
 load_imitate_data:  /home/nuria/phd/isaaclab-fb/logs/rsl_rl/go2_flat_direct/2025-04-24_16-50-52/data.npz
-imitate: true
+imitate: false
 
 agent:
   batch_size: 256
-  z_dim: 50
   num_inference_steps: 20000
-  mix_ratio: 0.3
-  sampling: True
-  update_z_every_step: 20
   update_z_proba: 1.
-  num_z_samples: 100
 
 num_eval_episodes: 10
-hydra:
-  run:
-    dir: ./exp_local/${agent.name}

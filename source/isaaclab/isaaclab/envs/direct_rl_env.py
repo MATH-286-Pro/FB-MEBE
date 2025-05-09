@@ -547,33 +547,22 @@ class DirectRLEnv(gym.Env):
         self.single_observation_space = gym.spaces.Dict()
         try:
             self.single_observation_space["policy"] = spec_to_gym_space(self.cfg.observation_space)
-        except:
+        except:  # allow for backward compatibility (to be removed for models trained after 7.05.2025)
             self.single_observation_space["policy"] = spec_to_gym_space(eval(self.cfg.observation_space)["value"])
         try:
-            self.single_observation_space["goal"] = spec_to_gym_space(eval(self.cfg.goal_space)["value"])
-        except:
-            pass
+            self.single_observation_space["goal"] = spec_to_gym_space(self.cfg.goal_space)
+        except:  # allow for backward compatibility (to be removed for models trained after 7.05.2025)
+            self.single_observation_space["goal"] = spec_to_gym_space(9)
         try:
             self.single_action_space = spec_to_gym_space(self.cfg.action_space)
-        except:
+        except:  # allow for backward compatibility (to be removed for models trained after 7.05.2025)
             self.single_action_space = spec_to_gym_space(eval(self.cfg.action_space)["value"])
 
         # batch the spaces for vectorized environments
         self.observation_space = gym.vector.utils.batch_space(self.single_observation_space["policy"], self.num_envs)
         self.action_space = gym.vector.utils.batch_space(self.single_action_space, self.num_envs)
-        try:
-            self.goal_space = gym.vector.utils.batch_space(self.single_observation_space["goal"], self.num_envs)
-        except:
-            pass
-
         # optional state space for asymmetric actor-critic architectures
         self.state_space = None
-        if self.cfg.state_space:
-            try:
-                self.single_observation_space["critic"] = spec_to_gym_space(eval(self.cfg.state_space)["value"])
-            except:
-                self.single_observation_space["critic"] = spec_to_gym_space(self.cfg.state_space)
-            self.state_space = gym.vector.utils.batch_space(self.single_observation_space["critic"], self.num_envs)
 
         # instantiate actions (needed for tasks for which the observations computation is dependent on the actions)
         self.actions = sample_space(self.single_action_space, self.sim.device, batch_size=self.num_envs, fill_value=0)

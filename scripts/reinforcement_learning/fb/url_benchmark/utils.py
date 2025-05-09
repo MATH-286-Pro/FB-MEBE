@@ -16,7 +16,9 @@ from torch import nn
 import torch.nn.functional as F
 from torch import distributions as pyd
 from torch.distributions.utils import _standard_normal
-from typing import Any
+from typing import Any, Dict
+from pathlib import Path
+import importlib
 
 try:
     from typing import Protocol
@@ -337,6 +339,71 @@ def class_to_dict(obj: object, ignore: list = []) -> dict[str, Any]:
         else:
             data[key] = value
     return data
+
+
+def load_function(path: str):
+    print(
+        'in load function'
+    )
+    """Safely load a function from a 'module.submodule:func' string."""
+    if ":" not in path:
+        raise ValueError(f"Invalid function path: {path}")
+    module_path, func_name = path.split(":")
+    module = importlib.import_module(module_path)
+    return getattr(module, func_name)
+
+
+def update_class_from_dict(obj, data: Dict[str, Any]):
+    for key, val in data.items():
+        if isinstance(obj, dict):
+            attr = obj.get(key, None)
+        else:
+            attr = getattr(obj, key, None)
+
+        # Automatically load function if it's a path string and key is 'func'
+        if key == "func" or "class_type" in key and isinstance(val, str) and ":" in val:
+            func = load_function(val)
+            setattr(obj, key, func)
+            continue
+
+        # Recursively update nested objects
+        if isinstance(val, dict):
+            update_class_from_dict(attr, val)
+        else:
+            if hasattr(obj, key):
+                print('setting', key, val)
+                setattr(obj, key, val)  # set entire dict if no sub-structure exists
+
+
+def load_config(play_path, cfg, env_cfg):
+    cwd = Path(__file__).parent.resolve().absolute()
+    # This loads the play config:
+    with open(os.path.join(cwd, 'configs', play_path + '.yaml',), 'r') as f:
+        play_cfg = yaml.load(f, Loader=yaml.SafeLoader)
+    # This is the path to the model to load config
+    load_cfg = play_cfg['load_model'].split('models')[0] + 'config.yaml'
+
+    def tuple_constructor(loader, node):
+        # Load the sequence of values from the YAML node
+        values = loader.construct_sequence(node)
+        # Return a tuple constructed from the sequence
+        return tuple(values)
+
+    def safe_update(cfg, update_dict):
+        # Get only keys that exist in the config
+        filtered_update = {k: v for k, v in update_dict.items() if k in cfg}
+        cfg.merge_with(filtered_update)
+
+    # Deal with !!python:tuple in config
+    yaml.SafeLoader.add_constructor('tag:yaml.org,2002:python/tuple', tuple_constructor)
+    # Load the YAML file
+    with open(load_cfg, 'r') as f:
+        new_cfg = yaml.load(f, Loader=yaml.SafeLoader)
+    # Update config with the config of the desired loaded model
+    safe_update(cfg, new_cfg)
+    update_class_from_dict(env_cfg, new_cfg)
+    # Rewrite the load config with the play config
+    safe_update(cfg, play_cfg)
 
 
 def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):

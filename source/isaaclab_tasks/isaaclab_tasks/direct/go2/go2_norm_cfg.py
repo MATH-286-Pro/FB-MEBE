@@ -57,7 +57,6 @@ class Go2FlatEnvNormCfg(DirectRLEnvCfg):
     action_space = 12
     observation_space = 45
     goal_space = 9
-    state_space = 0
 
     # simulation
     sim: SimulationCfg = SimulationCfg(

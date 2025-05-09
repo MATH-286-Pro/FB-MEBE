@@ -5,6 +5,7 @@ defaults:
 
 
 append_goal_to_observation: True
+empirical_obs_normalization: True
 uncertainty: True
 eval_every_steps: 5000
 use_wandb: true
