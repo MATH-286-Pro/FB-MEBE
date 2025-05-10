@@ -109,7 +109,7 @@ class Go2NormEnv(DirectRLEnv):
                     add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
                 self._robot.data.projected_gravity_b + (
                     add_noise * torch.rand_like(self._robot.data.projected_gravity_b) * 0.1 - 0.05),
-                # self._commands,
+                # self._commands, # for ppo
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos + (
                     add_noise * torch.rand_like(self._robot.data.joint_pos) * 0.02 - 0.01),
                 self._robot.data.joint_vel + (

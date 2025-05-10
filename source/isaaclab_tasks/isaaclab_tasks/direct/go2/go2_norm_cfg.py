@@ -55,7 +55,7 @@ class Go2FlatEnvNormCfg(DirectRLEnvCfg):
     decimation = 4
     action_scale = 0.25
     action_space = 12
-    observation_space = 45
+    observation_space = 45  # 48 for ppo (45 + goal commands)
     goal_space = 9
 
     # simulation
