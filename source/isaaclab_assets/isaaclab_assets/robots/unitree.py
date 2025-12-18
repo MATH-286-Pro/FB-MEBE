@@ -153,7 +153,7 @@ UNITREE_GO2_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        pos=(0.0, 0.0, 0.4),
+        pos=(0.0, 0.0, 0.3),  #ff0000 IMPORTANT: This will decide the initial height of the robot
         joint_pos={
             ".*L_hip_joint": 0.1,
             ".*R_hip_joint": -0.1,
