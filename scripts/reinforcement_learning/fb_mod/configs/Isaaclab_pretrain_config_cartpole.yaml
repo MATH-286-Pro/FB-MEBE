@@ -1,0 +1,25 @@
+# Import base configuration and override specific parameters
+defaults:
+  - Isaaclab_pretrain_config_base
+  - _self_  # This ensures overrides in this file take precedence
+
+##########################################################################################################################
+# Override task-specific settings
+env:
+  task: Isaac-Cartpole-Direct-v0
+
+###################################################### User Define #######################################################
+train:
+  agent: meta
+
+  num_train_steps: 30_000
+  
+agent:
+  compile: true
+  
+  train:
+    ortho_coef: 1.0
+
+  model:
+    archi:
+      z_dim: 20

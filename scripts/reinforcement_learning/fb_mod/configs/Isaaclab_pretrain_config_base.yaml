@@ -1,0 +1,69 @@
+# Hydra configuration to disable automatic directory change
+hydra:
+  run:
+    dir: .  # Keep current directory instead of creating outputs/date/time
+  job:
+    chdir: false  # Don't change working directory
+
+defaults:
+  - agent: FBAgent  # Import agent configuration from ConfigStore #0000ff
+
+##########################################################################################################################
+env:
+  # IsaacLab APP Config
+  device: cuda
+  headless: true
+  
+  # Task config
+  task: Isaac-Flat-Unitree-Go2-Rnd-full-FB-v0
+  num_envs: 1024
+  seed: 0
+
+  action_scale: 0.0 # obtianed from env
+
+  # Video Config
+  video: true
+  video_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
+  video_length:   250
+  video_resolution: [1280, 720]  # Default [1280, 720]
+                                 # [320, 240], [480, 360], [640, 480]
+                                 # [1280, 720], [1920, 1080]
+
+##########################################################################################################################
+wandb:
+  use_wandb: true
+  entity:    math-286-pro-epfl
+  project:   FB_Jiajun
+  name:      FB
+  group:
+  tags:
+
+###################################################### User Define #######################################################
+train:
+
+  agent: crl
+
+  machine: local
+
+  num_seeding_steps: 1000
+  num_train_steps: 150_000
+  replay_buffer_N: 5000
+  replay_buffer_capacity: 0 # replay_buffer_N * num_envs, will be set in pretrain.py
+
+  # update settings
+  interval_update: 10
+  num_updates: 10
+
+  # log settings
+  interval_log: 100
+
+  # save settings (保存模型 + 保存 buffer 数据)
+  save_model: true
+  save_buffer_size: 100_000
+  interval_save_model: 50000
+  
+  # eval settings
+  eval: true
+  eval_episode_length: 250
+  interval_eval: 5000
+  num_eval_sample: 50_000

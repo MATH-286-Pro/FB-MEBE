@@ -1,0 +1,109 @@
+##########################################################################################################################
+variable:
+  model: simple
+  hidden_dim: 1024
+  hidden_layers: 2
+
+# compile options
+compile:    false
+cudagraphs: false
+
+# optim
+train:
+  discount: 0.98
+  batch_size: 1024
+  use_mix_rollout: false
+  update_z_every_step: 150
+
+
+  weight_decay:   0.0
+  clip_grad_norm: 
+  
+  # target network update
+  fb_target_tau:     0.01
+  critic_target_tau: 0.005
+  
+  # uncertainty
+  fb_pessimism_penalty:     0.0
+  actor_pessimism_penalty:  0.5
+  critic_pessimism_penalty: 0.5
+
+  # meta FB only parameters
+  z_buffer_size: 10_000
+
+  stddev_clip:    0.3
+
+  lr_f:      3e-4
+  lr_b:      1e-5
+  lr_actor:  3e-4
+  lr_critic: 1e-4
+
+  ortho_coef: 100
+  train_goal_ratio: 0.2
+  expert_asm_ratio: 0.6
+  relabel_ratio: 0.8        #ff0000??? 这是什么
+  q_loss_coef: 0.1
+
+  # discriminator
+  grad_penalty_discriminator: 10
+  weight_decay_discriminator: 0.0
+  lr_discriminator: 1e-5
+
+  # critic
+  reg_coeff: 0.01
+
+model:
+  device: ${env.device}
+
+  policy_dim: 0     ### MISSING #### #0000ff
+  obs_dim:    0     ### MISSING #### #0000ff
+  goal_dim:   0     ### MISSING #### #0000ff
+  critic_dim: 0     ### MISSING #### #0000ff
+  action_dim: 0     ### MISSING #### #0000ff
+  norm_obs: true
+  momentum: 0.0005
+
+  inference_batch_size: ${train.num_eval_sample}
+
+  actor_std: 0.2
+  seq_length: 8    # for CPR
+
+  archi:
+    z_dim: 50
+    norm_z: true
+
+    f:
+      model: ${agent.variable.model}  # 由于作为 agent 的一部分被导入，这里需要加上 agent 前缀
+      hidden_dim: ${agent.variable.hidden_dim}
+      hidden_layers: ${agent.variable.hidden_layers}
+
+      embedding_layers: 2
+      num_parallel: 2
+      ensemble_mode: batch
+
+    b:
+      norm: true
+      hidden_dim: 256
+      hidden_layers: 1
+
+    actor:
+      model: ${agent.variable.model}
+      hidden_dim: ${agent.variable.hidden_dim}
+      hidden_layers: ${agent.variable.hidden_layers}
+
+      embedding_layers: 2
+
+    critic:
+      enable: false
+      model: ${agent.variable.model}
+      hidden_dim: ${agent.variable.hidden_dim}
+      hidden_layers: ${agent.variable.hidden_layers}
+
+      embedding_layers: 2
+      num_parallel: 2
+      ensemble_mode: batch
+
+    discriminator:
+      hidden_layers: 3
+      hidden_dim: 1024
+##########################################################################################################################

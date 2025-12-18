@@ -1,0 +1,107 @@
+# Hydra configuration to disable automatic directory change
+hydra:
+  run:
+    dir: .  # Keep current directory instead of creating outputs/date/time
+  job:
+    chdir: false  # Don't change working directory
+
+defaults:
+  - Isaaclab_pretrain_config_base
+  - _self_
+
+##########################################################################################################################
+env:
+  # IsaacLab APP Config
+  device: cuda:0
+  headless: true
+  
+  # Task config
+  task: Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-v0
+  # task: Isaac-Flat-Unitree-Go2-Rnd-Full-FB-INC-v0
+  num_envs: 2048
+  seed: 0
+
+  action_scale: 0.0 # obtianed from env
+  
+  # Video Config
+  video: true
+  video_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
+  video_length:   250
+
+##########################################################################################################################
+wandb:
+  use_wandb: true
+  entity:    math-286-pro-epfl
+  project:   FB_Jiajun
+  name:      FB
+  group:     FB
+  tags:
+
+###################################################### User Define #######################################################
+agent:
+  compile:    true
+  cudagraphs: false
+  train:
+    batch_size: 4096
+
+    lr_f:      5e-5
+    lr_b:      5e-5
+    lr_actor:  5e-5
+    lr_critic: 5e-5
+
+    # FB loss    
+    ortho_coef: 100.0
+    q_loss_coef: 0.1
+
+    update_z_every_step: 100
+
+    reg_coeff: 0.01
+
+    train_goal_ratio: 0.2
+
+  model:
+    archi:
+      z_dim: 50
+      f:
+        hidden_dim: 1024
+        hidden_layers: 1
+      b:
+        hidden_dim: 512
+        hidden_layers: 2
+      actor:
+        hidden_dim: 1024
+        hidden_layers: 1
+      critic:
+        enable: false
+        hidden_dim: 1024
+        hidden_layers: 1
+
+train:
+
+  agent: meta
+
+  machine: local   # local or cluster
+
+  # train settings
+  num_seeding_steps: 1000
+  num_train_steps: 150_000
+  replay_buffer_N: 2000
+  replay_buffer_capacity: 0 # replay_buffer_N * num_envs, will be set in pretrain.py
+
+  # update settings
+  interval_update: 10
+  num_updates: 10
+
+  # log settings
+  interval_log: 100
+
+  # save settings
+  save_model: true
+  save_buffer_size: 100_000
+  interval_save_model: 50000
+
+  # eval settings
+  eval: true
+  eval_episode_length: 250
+  interval_eval: 20000
+  num_eval_sample: 100_000
