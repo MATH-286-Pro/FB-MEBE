@@ -50,6 +50,7 @@ from toolbox.functions_reward import reward_fn
 from toolbox.functions_entropy import compute_entropy
 
 from agent_crl.agent import FB_CRL_AGENT
+from agent_meta.fb.agent import FBAgent as FB_META_Agent
 from toolbox.functions_visualization import PLOT_VALUE, PLOT_DENSITY
 
 ##########################################
@@ -171,7 +172,12 @@ class WORKSPACE:
             self.eval_env  = FB_VecEnvWrapper(self.env)  # type: ignore
 
         # 2.create agent
-        self.agent = FB_CRL_AGENT(self.agent_cfg)
+        if train_cfg.agent == 'meta':
+            agent_cfg_dict = omgcf.OmegaConf.to_container(self.agent_cfg, resolve=True)  # type: ignore
+            self.agent = FB_META_Agent(**agent_cfg_dict)  # type: ignore
+        elif train_cfg.agent == 'crl':
+            self.agent = FB_CRL_AGENT(self.agent_cfg)
+
 
         # 3.create buffer
         self.replay_buffer = {
