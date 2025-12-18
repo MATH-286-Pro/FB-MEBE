@@ -36,3 +36,8 @@ class Go2FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+
+@configclass
+class Go2FlatCompPPORunnerCfg(Go2FlatPPORunnerCfg):
+    experiment_name = "go2_flat_norm_comp"
+    save_interval = 100
