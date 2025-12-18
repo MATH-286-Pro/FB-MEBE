@@ -65,11 +65,23 @@ class FBAgent:
             weight_decay=self.cfg.train.weight_decay,
         )
 
+        if self.cfg.model.archi.critic.enable:
+            self.critic_optimizer = torch.optim.Adam(
+                self._model._critic.parameters(),
+                lr=self.cfg.train.lr_critic,
+                capturable=self.cfg.cudagraphs and not self.cfg.compile,
+                weight_decay=self.cfg.train.weight_decay,
+            )
+
         # prepare parameter list
         self._forward_map_paramlist = tuple(x for x in self._model._forward_map.parameters())
         self._target_forward_map_paramlist = tuple(x for x in self._model._target_forward_map.parameters())
         self._backward_map_paramlist = tuple(x for x in self._model._backward_map.parameters())
         self._target_backward_map_paramlist = tuple(x for x in self._model._target_backward_map.parameters())
+
+        if self.cfg.model.archi.critic.enable:
+            self._critic_paramlist = tuple(x for x in self._model._critic.parameters())
+            self._target_critic_paramlist = tuple(x for x in self._model._target_critic.parameters())
 
         # precompute some useful variables
         self.off_diag = 1 - torch.eye(self.cfg.train.batch_size, self.cfg.train.batch_size, device=self.device)
@@ -86,12 +98,18 @@ class FBAgent:
             self.update_actor = torch.compile(self.update_actor, mode=mode)  # use fullgraph=True to debug for graph breaks
             self.sample_mixed_z = torch.compile(self.sample_mixed_z, mode=mode, fullgraph=True)
 
+            if self.cfg.model.archi.critic.enable:
+                self.update_critic = torch.compile(self.update_critic, mode=mode)
+
         print(f"cudagraphs {self.cfg.cudagraphs}")
         if self.cfg.cudagraphs:
             from tensordict.nn import CudaGraphModule
 
             self.update_fb = CudaGraphModule(self.update_fb, warmup=5)
             self.update_actor = CudaGraphModule(self.update_actor, warmup=5)
+
+            if self.cfg.model.archi.critic.enable:
+                self.update_critic = CudaGraphModule(self.update_critic, warmup=5)
 
     def act(self, obs: torch.Tensor, z: torch.Tensor, mean: bool = True) -> torch.Tensor:
         return self._model.act(obs, z, mean)
@@ -112,11 +130,12 @@ class FBAgent:
     def update(self, replay_buffer, step: int) -> Dict[str, torch.Tensor]:
         batch = replay_buffer["train"].sample(self.cfg.train.batch_size)
 
-        obs, action, next_obs, terminated = (
+        obs, action, next_obs, terminated, reward_reg = (
             batch["observation"],
             batch["action"],
             batch["next"]["observation"],
             batch["next"]["terminated"],
+            batch["next"]["reward_reg"], # r(s,a) is the reg_reward of s', so should use next
         )
         discount = self.cfg.train.discount * ~terminated
 
@@ -164,6 +183,20 @@ class FBAgent:
             q_loss_coef=q_loss_coef,
             clip_grad_norm=clip_grad_norm,
         )
+
+        if self.cfg.model.archi.critic.enable:
+            metrics.update(
+                self.update_critic(
+                    OBS=OBS,
+                    action=action,
+                    discount=discount,
+                    NEXT_OBS=NEXT_OBS,
+                    z=z,
+                    reward_reg=reward_reg,
+                    clip_grad_norm=clip_grad_norm,
+                )
+            )
+
         metrics.update(
             self.update_actor(
                 OBS=OBS,
@@ -176,6 +209,9 @@ class FBAgent:
         with torch.no_grad():
             _soft_update_params(self._forward_map_paramlist, self._target_forward_map_paramlist, self.cfg.train.fb_target_tau)
             _soft_update_params(self._backward_map_paramlist, self._target_backward_map_paramlist, self.cfg.train.fb_target_tau)
+
+            if self.cfg.model.archi.critic.enable:
+                _soft_update_params(self._critic_paramlist, self._target_critic_paramlist, self.cfg.train.fb_target_tau)
 
         return metrics
 
@@ -267,12 +303,24 @@ class FBAgent:
         return self.update_td3_actor(OBS=OBS, z=z, clip_grad_norm=clip_grad_norm)
 
     def update_td3_actor(self, OBS: torch.Tensor, z: torch.Tensor, clip_grad_norm: float | None) -> Dict[str, torch.Tensor]:
+
+        metrics = {}
+
         dist = self._model._actor(OBS['policy'], z, self._model.cfg.actor_std)
         action = dist.sample(clip=self.cfg.train.stddev_clip)
         Fs = self._model._forward_map(OBS['obs'], z, action)  # num_parallel x batch x z_dim
-        Qs = (Fs * z).sum(-1)  # num_parallel x batch
-        _, _, Q = self.get_targets_uncertainty(Qs, self.cfg.train.actor_pessimism_penalty)  # batch
-        actor_loss = -Q.mean()
+        Qs_fb = (Fs * z).sum(-1)  # num_parallel x batch
+        _, _, Q_fb = self.get_targets_uncertainty(Qs_fb, self.cfg.train.actor_pessimism_penalty)  # batch
+        actor_loss = -Q_fb.mean()
+        metrics["actor_loss_fb"] = actor_loss.detach().clone()
+
+        if self.cfg.model.archi.critic.enable:
+            Qs_critic = self._model._critic(OBS['critic'], z, action)  # with grad
+            _, _, Q_critic = self.get_targets_uncertainty(Qs_critic, self.cfg.train.critic_pessimism_penalty)
+
+            weight = Q_fb.abs().mean().detach()
+            actor_loss -= Q_critic.mean() * self.cfg.train.reg_coeff * weight
+            metrics["actor_loss_critic"] = -(Q_critic.mean() * self.cfg.train.reg_coeff * weight).detach().clone()
 
         # optimize actor
         self.actor_optimizer.zero_grad(set_to_none=True)
@@ -281,8 +329,54 @@ class FBAgent:
             torch.nn.utils.clip_grad_norm_(self._model._actor.parameters(), clip_grad_norm)
         self.actor_optimizer.step()
 
-        return {"actor_loss": actor_loss.detach(), 
-                "actor_loss_fb": -Q.mean().detach()}
+        metrics["actor_loss"] = actor_loss.detach().clone()
+        return metrics
+
+    def update_critic(
+            self,
+            OBS: dict[str, torch.Tensor],
+            action: torch.Tensor,
+            discount: torch.Tensor,
+            NEXT_OBS: dict[str, torch.Tensor],
+            z: torch.Tensor,
+            reward_reg: torch.Tensor,
+            clip_grad_norm: float | None,
+        ) -> Dict[str, torch.Tensor]:
+
+        num_parallel = self.cfg.model.archi.critic.num_parallel
+
+        with torch.no_grad():
+            dist = self._model._actor(NEXT_OBS['policy'], z, std=self.cfg.model.actor_std)
+            next_action = dist.sample(clip=self.cfg.train.stddev_clip)
+            next_Qs = self._model._target_critic(NEXT_OBS['critic'], z, next_action)
+            Q_mean, Q_unc, next_Q = self.get_targets_uncertainty(next_Qs, self.cfg.train.critic_pessimism_penalty)
+
+            target_Q = reward_reg + discount * next_Q
+            target_Qs = target_Q.expand(num_parallel, -1, -1)
+
+        Qs = self._model._critic(OBS['critic'], z, action)  # with grad
+        critic_loss = 0.5 * num_parallel * F.mse_loss(Qs, target_Qs)
+
+        # optimize critic
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        critic_loss.backward()
+        
+        if clip_grad_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self._model._critic.parameters(), clip_grad_norm)
+        self.critic_optimizer.step()
+
+        with torch.no_grad():
+            output_metrics = {
+                "target_Q_reg": target_Q.mean().detach(),
+                "Q_reg_1": Q_mean.mean().detach(),
+                "unc_Q_reg": Q_unc.mean().detach(),
+                "critic_loss": critic_loss.mean().detach(),
+                "mean_reg_reward": reward_reg.mean().detach(),
+            }
+        
+        return output_metrics
+
+
 
     def get_targets_uncertainty(
         self, preds: torch.Tensor, pessimism_penalty: torch.Tensor | float

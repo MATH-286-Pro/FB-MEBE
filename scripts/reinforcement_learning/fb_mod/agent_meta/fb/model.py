@@ -45,11 +45,15 @@ class FBModel(nn.Module):
         self._B_normalizer      = nn.BatchNorm1d(goal_dim,   affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
         self._critic_normalizer = nn.BatchNorm1d(critic_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
 
+        if self.cfg.archi.critic.enable:
+            self._critic        = build_forward(critic_dim, arch.z_dim, action_dim, arch.critic, output_dim=1)
 
     def _prepare_for_train(self) -> None:
         # create TARGET networks
         self._target_backward_map = copy.deepcopy(self._backward_map)
         self._target_forward_map = copy.deepcopy(self._forward_map)
+        if self.cfg.archi.critic.enable:
+            self._target_critic = copy.deepcopy(self._critic)
 
     def to(self, *args, **kwargs):
         device, _, _, _ = torch._C._nn._parse_to(*args, **kwargs)
