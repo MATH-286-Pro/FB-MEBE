@@ -60,6 +60,7 @@ class Go2_Base_Cfg(DirectRLEnvCfg):
 
     # robot
     robot: ArticulationCfg = UNITREE_GO2_CFG.replace(prim_path="/World/envs/env_.*/Robot")  # type: ignore
+    robot.spawn.articulation_props.enabled_self_collisions = True
     contact_sensor: ContactSensorCfg = ContactSensorCfg(
         prim_path="/World/envs/env_.*/Robot/.*", history_length=3, update_period=0.005, track_air_time=True
     )
