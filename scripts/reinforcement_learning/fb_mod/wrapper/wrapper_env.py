@@ -191,8 +191,8 @@ class FB_VecEnvWrapper(VecEnv):
         }
 
         info = {
-            'qpos': obs_dict['raw'][:, index_qpos].clone(),
-            'qvel': obs_dict['raw'][:, index_qvel].clone()
+            # 'qpos': obs_dict['raw'][:, index_qpos].clone(),
+            # 'qvel': obs_dict['raw'][:, index_qvel].clone()
         }
         
         return td, info
@@ -216,8 +216,8 @@ class FB_VecEnvWrapper(VecEnv):
         }
 
         info = {
-            'qpos':     obs_dict['raw'][:, index_qpos].clone(),
-            'qvel':     obs_dict['raw'][:, index_qvel].clone(),
+            # 'qpos':     obs_dict['raw'][:, index_qpos].clone(),
+            # 'qvel':     obs_dict['raw'][:, index_qvel].clone(),
             'rew_dict': copy.deepcopy(extras['rew_dict']),
             'reg_dict': copy.deepcopy(self.env.unwrapped.get_env_metrics()),
         }
