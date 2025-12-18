@@ -1,0 +1,16 @@
+# Hydra configuration to disable automatic directory change
+hydra:
+  run:
+    dir: .  # Keep current directory instead of creating outputs/date/time
+  job:
+    chdir: false  # Don't change working directory
+
+env:
+  headless: true
+  num_envs: 512
+  seed: 0
+
+wandb:
+  use_wandb: false
+
+path: path to your model.pt/../.. directory

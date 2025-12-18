@@ -28,6 +28,15 @@
                 // "train.num_eval_sample=50_000",
             ],
         },
-
+        {
+            "name": "FB Play",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/reinforcement_learning/fb_mod/play.py",
+            "console": "integratedTerminal",
+            "args" : [
+                // "env.headless=False",
+            ],
+        },
     ]
 }
