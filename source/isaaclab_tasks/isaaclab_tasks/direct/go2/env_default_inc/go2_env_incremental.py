@@ -28,3 +28,9 @@ class Go2_Incremental_Env(Go2NormEnv):
         self._actions = actions.clone()
         self._processed_actions = self.cfg.action_scale * self._actions + self._robot.data.joint_pos #0000ff
         # self._processed_actions = self.cfg.action_scale * self._actions + self._robot.data.default_joint_pos   # original one
+
+    #00ff00 -0.1
+    # In incremental control, action rate is just the action
+    # Since action rate the difference between current action and previous action
+    def action_rate_l2(self) -> torch.Tensor:
+        return torch.sum(torch.square(self._actions), dim=1)

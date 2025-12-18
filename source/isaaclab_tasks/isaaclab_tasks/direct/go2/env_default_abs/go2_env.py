@@ -73,6 +73,15 @@ class Go2NormEnv(DirectRLEnv):
                 "reg_reward",
                 "base_height",
                 "feet_slip_penalty",
+
+                'joint_vel',
+                'joint_acc',
+                'energy',
+
+                'air_time_variance',
+                'feet_slide',
+
+                'undesired_contact',
             ]
         }
 
@@ -84,8 +93,12 @@ class Go2NormEnv(DirectRLEnv):
         self._thigh_contact_ids, _ = self._contact_sensor.find_bodies(".*thigh")
         self._calf_contact_ids, _  = self._contact_sensor.find_bodies(".*calf")
         self._hip_contact_ids, _   = self._contact_sensor.find_bodies(".*hip")
-        self._undesired_contact_body_ids, _ = self._contact_sensor.find_bodies(".*thigh")
-
+        self._undesired_contact_body_ids = self._base_contact_id + \
+                                           self._other_contact_id + \
+                                           self._thigh_contact_ids + \
+                                           self._calf_contact_ids + \
+                                           self._hip_contact_ids
+        
         self._base_id, _   = self._robot.find_bodies("base")
         self._other_id, _  = self._robot.find_bodies("Head_.*")
         self._feet_ids, _  = self._robot.find_bodies(".*foot")
@@ -292,6 +305,18 @@ class Go2NormEnv(DirectRLEnv):
         self.foot_clearance = self.compute_feet_clearance(target_height=0.10, std=0.005, tanh_mult=2.0)
         self.slip_penalty   = self.compute_feet_slip_penalty(threshold=1.0)
 
+        #00ff00 unitree_isaaclab
+        self.penalty_joint_vel         = self.joint_vel_l2()
+        self.penalty_joint_acc         = self.joint_acc_l2()
+        self.penalty_joint_torques     = self.joint_torque_l2()
+        self.penalty_action_rate       = self.action_rate_l2()
+        self.penalty_energy            = self.energy()
+
+        self.reward_feet_air_time      = self.feet_air_time(threshold=0.5)
+        self.penalty_air_time_variance = self.air_time_variance()
+        self.penalty_feet_slide        = self.feet_slide()
+
+        self.penalty_undesired_contact = self.undesired_contacts(threshold=1.0)
 
         task_rewards = {
             "lin_vel_xy_rew": lin_vel_xy_rew,
@@ -301,12 +326,17 @@ class Go2NormEnv(DirectRLEnv):
         }
 
         regularization_rewards = {
-            # "action_rate_rew":    self.action_rate_rew,
-            # "joint_torques_rew": self.joint_torques_rew,
-            # "foot_clearance":    self.foot_clearance,
-            "air_time":          +5.0 * self.air_time,
-            # 'gait_symmetry':     gait_symmetry,
-            'feet_slip_penalty': -0.5 * self.slip_penalty,
+            'joint_acc':         -2.5e-7 * self.penalty_joint_acc,
+            'action_rate':       -0.1 *    self.penalty_action_rate,
+            # 'joint_vel':         -0.001 *  self.penalty_joint_vel,
+            # 'joint_torques':     -2e-4 *   self.penalty_joint_torques,
+            # 'energy':            -2e-5 *   self.penalty_energy,
+
+            # "air_time":          +0.1 * self.reward_feet_air_time,
+            # 'air_time_variance': -1.0 * self.penalty_air_time_variance,
+            'feet_slide':        -0.1 * self.penalty_feet_slide,
+
+            # 'undesired_contact': -1.0 * self.penalty_undesired_contact,
         }
 
         return task_rewards, regularization_rewards
@@ -549,3 +579,65 @@ class Go2NormEnv(DirectRLEnv):
 
         reward = is_contact * foot_planner_velocity
         return torch.sum(reward, dim=1)
+    
+
+    ## from: https://github.com/unitreerobotics/unitree_rl_lab
+
+    ########## regularization ##########
+    #00ff00 -0.001
+    def joint_vel_l2(self) -> torch.Tensor:
+        return torch.sum(torch.square(self._robot.data.joint_vel), dim=1)
+
+    #00ff00 -2.5e-7
+    def joint_acc_l2(self) -> torch.Tensor:
+        return torch.sum(torch.square(self._robot.data.joint_acc), dim=1)
+
+    #00ff00 -2e-4
+    def joint_torque_l2(self) -> torch.Tensor:
+        return torch.sum(torch.square(self._robot.data.applied_torque), dim=1)
+
+    #00ff00 -0.1
+    def action_rate_l2(self) -> torch.Tensor:
+        return torch.sum(torch.square(self._actions - self._previous_actions), dim=1)
+
+    #00ff00 -10.0
+    # def joint_pos_limits(self) -> torch.Tensor:
+
+    #00ff00 -2e-5
+    def energy(self) -> torch.Tensor:
+        qvel = self._robot.data.joint_vel
+        qfrc = self._robot.data.applied_torque
+
+        power = torch.sum(torch.abs(qvel) * torch.abs(qfrc), dim=1)
+        return power
+
+    ########## Feet ##########
+    #00ff00 +0.1
+    def feet_air_time(self, threshold: float) -> torch.Tensor:
+        first_contact = self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_contact_ids]
+        last_air_time = self._contact_sensor.data.last_air_time[:, self._feet_contact_ids]
+        reward = torch.sum((last_air_time - threshold) * first_contact, dim=1)
+        return reward
+    
+    #00ff00 -1.0
+    def air_time_variance(self) -> torch.Tensor:
+        last_air_time     = self._contact_sensor.data.last_air_time[:, self._feet_contact_ids]
+        last_contact_time = self._contact_sensor.data.last_contact_time[:, self._feet_contact_ids]
+        return torch.var(torch.clip(last_air_time, max=0.5), dim=1) + torch.var(
+            torch.clip(last_contact_time, max=0.5), dim=1
+        )
+    #00ff00 -0.1
+    def feet_slide(self) -> torch.Tensor:
+        contacts = self._feet_contact_state
+        body_vel = self._robot.data.body_lin_vel_w[:, self._feet_ids, :2]
+        reward   = torch.sum(body_vel.norm(dim=-1) * contacts, dim=1)
+        return reward
+
+    ########## Other ##########
+    #00ff00 -1.0
+    def undesired_contacts(self, threshold: float) -> torch.Tensor:
+
+        net_contact_forces = self._contact_sensor.data.net_forces_w_history
+        is_contact = torch.max(torch.norm(net_contact_forces[:, :, self._undesired_contact_body_ids], dim=-1), dim=1)[0] > threshold
+
+        return torch.sum(is_contact, dim=1)
