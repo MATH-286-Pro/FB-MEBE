@@ -23,6 +23,18 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from toolbox.dataclass_pylance import AGENT_CFG, MODEL_CFG, TRAIN_CFG
 ########### user define config end   ############
 
+########### user define class start ############
+class NORMALIZER_CLASS(nn.BatchNorm1d):
+    @property
+    def mean(self):
+        return self.running_mean
+    
+    @property
+    def std(self):
+        return torch.sqrt(self.running_var)
+########### user define class end   ############
+
+
 class FBModel(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
@@ -40,10 +52,10 @@ class FBModel(nn.Module):
         self._backward_map = build_backward(goal_dim, arch.z_dim, arch.b)
         self._actor        = build_actor(policy_dim, arch.z_dim, action_dim, arch.actor)
 
-        self._policy_normalizer = nn.BatchNorm1d(policy_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
-        self._F_normalizer      = nn.BatchNorm1d(obs_dim,    affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
-        self._B_normalizer      = nn.BatchNorm1d(goal_dim,   affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
-        self._critic_normalizer = nn.BatchNorm1d(critic_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._policy_normalizer = NORMALIZER_CLASS(policy_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._F_normalizer      = NORMALIZER_CLASS(obs_dim,    affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._B_normalizer      = NORMALIZER_CLASS(goal_dim,   affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._critic_normalizer = NORMALIZER_CLASS(critic_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
 
         if self.cfg.archi.critic.enable:
             self._critic        = build_critic(critic_dim, action_dim, arch.critic, output_dim=1)

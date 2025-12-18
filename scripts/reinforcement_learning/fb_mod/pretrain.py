@@ -279,7 +279,20 @@ class WORKSPACE:
                     if hydra_cfg.wandb.use_wandb:
                         wandb.log(self.train_metrics.mean, step=t)
                     self.train_metrics.clear()
-                    
+
+                    # upload normalizer data
+                    if hydra_cfg.wandb.use_wandb and self.agent_cfg.model.norm_obs:
+                        means = self.agent._model._policy_normalizer.mean
+                        stds  = self.agent._model._policy_normalizer.std
+
+                        RANGE = len(means)
+                        # pad indices with leading zeros so wandb sorts keys numerically
+                        width = len(str(RANGE))
+                        for i in range(RANGE):
+                            idx = f"{i:0{width}d}"
+                            wandb.log({f"normalizer/policy/mean_{idx}": means[i].item()}, step=t)
+                            wandb.log({f"normalizer/policy/std_{idx}":  stds[i].item()},  step=t)
+
 
             # Evaluate agent
             if self.train_cfg.eval and t % self.train_cfg.interval_eval == 0 and t >= self.train_cfg.num_seeding_steps and self.replay_buffer["train"].size >= self.train_cfg.num_eval_sample:

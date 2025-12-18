@@ -26,6 +26,16 @@ class eval_mode:
         for model, state in zip(self.models, self.prev_states):
             model.train(state)
 
+
+class NORMALIZER_CLASS(nn.BatchNorm1d):
+    @property
+    def mean(self):
+        return self.running_mean
+    
+    @property
+    def std(self):
+        return torch.sqrt(self.running_var)
+
 ########################################################################################################################
 class FBModel(nn.Module):
 
@@ -42,10 +52,10 @@ class FBModel(nn.Module):
         self.action_dim = model_cfg.action_dim
 
         # obs normalizer
-        self._policy_normalizer = nn.BatchNorm1d(self.policy_dim, affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
-        self._F_normalizer      = nn.BatchNorm1d(self.obs_dim,    affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
-        self._B_normalizer      = nn.BatchNorm1d(self.goal_dim,   affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
-        self._critic_normalizer = nn.BatchNorm1d(self.critic_dim, affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
+        self._policy_normalizer = NORMALIZER_CLASS(self.policy_dim, affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
+        self._F_normalizer      = NORMALIZER_CLASS(self.obs_dim,    affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
+        self._B_normalizer      = NORMALIZER_CLASS(self.goal_dim,   affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
+        self._critic_normalizer = NORMALIZER_CLASS(self.critic_dim, affine=False, momentum=model_cfg.momentum).to(model_cfg.device) if model_cfg.norm_obs else nn.Identity().to(model_cfg.device)
 
         # Forward Network
         self._forward_map    = meta.ForwardMap(obs_dim=self.obs_dim, z_dim = model_cfg.archi.z_dim, action_dim = self.action_dim, archi = model_cfg.archi.f).to(model_cfg.device)
