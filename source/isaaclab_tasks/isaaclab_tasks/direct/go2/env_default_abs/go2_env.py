@@ -400,6 +400,33 @@ class Go2NormEnv(DirectRLEnv):
         self._robot.reset(env_ids)
         super()._reset_idx(env_ids)
 
+        # 检查重置后的脚高度，如果最小脚高度 < 0.02，抬高机器人基座
+        # 需要写入数据后才能读取更新后的位置
+        self._robot.write_data_to_sim()
+        self.scene.update(dt=0.0)  # 更新场景以获取最新的body位置
+        
+        # 获取重置环境的脚高度
+        feet_height_reset = self._robot.data.body_pos_w[env_ids][:, self._feet_ids, 2]  # [len(env_ids), 4]
+        min_feet_height = torch.min(feet_height_reset, dim=1)[0]  # [len(env_ids)]
+        
+        # 找到需要抬高的环境（最小脚高度 < 0.02）
+        need_lift = min_feet_height < 0.02
+        lift_env_ids = env_ids[need_lift]
+        
+        if len(lift_env_ids) > 0:
+            # 计算需要抬高的高度（目标是最小脚高度达到 0.02，再加一点余量 0.01）
+            lift_height = 0.03 - min_feet_height[need_lift]
+            
+            # 获取当前 base 位置并抬高
+            current_pos = self._robot.data.root_pos_w[lift_env_ids].clone()
+            current_pos[:, 2] += lift_height
+            
+            # 设置新的 base 位置
+            self._robot.write_root_pose_to_sim(
+                root_pose=torch.cat([current_pos, self._robot.data.root_quat_w[lift_env_ids]], dim=-1),
+                env_ids=lift_env_ids
+            )
+
         # 到达 episode length 的环境会根据 episode_length_buf 重置
         self.episode_length_buf[env_ids] = 0
         self._actions[env_ids] = torch.zeros_like(self._actions[env_ids])
