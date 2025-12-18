@@ -17,6 +17,9 @@ import isaaclab.utils.math as math_utils
 from rsl_rl.modules import EmpiricalNormalization
 from typing import Tuple, Dict
 
+from isaaclab.markers import VisualizationMarkers
+from isaaclab.markers.config import GREEN_ARROW_X_MARKER_CFG, BLUE_ARROW_X_MARKER_CFG
+
 from .go2_cfg_fix_f import Go2FlatEnvNormCfg
 
 
@@ -444,6 +447,82 @@ class Go2NormEnv(DirectRLEnv):
             self._commands[env_ids, 2] = torch.rand(len(env_ids), device=self.device) * (self._commands_range["wz"][1] - self._commands_range["wz"][0]) + self._commands_range["wz"][0]
 
 
+
+    def _set_debug_vis_impl(self, debug_vis: bool):
+        """Create or toggle visibility of the velocity arrows used for debugging.
+
+        When enabled, two instanced arrow markers are created: one for the desired velocity
+        (green) and one for the current velocity (blue). The markers are updated in the
+        `_debug_vis_callback` which is subscribed by the parent class when debug vis is enabled.
+        """
+        # create markers if necessary
+        if debug_vis:
+            if not hasattr(self, "goal_vel_visualizer"):
+                # Use the pre-defined arrow USD files and place them under /Visuals/Command
+
+                goal_vel_visualizer_cfg    = GREEN_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/velocity_goal")
+                current_vel_visualizer_cfg = BLUE_ARROW_X_MARKER_CFG.replace(prim_path="/Visuals/Command/velocity_current")
+
+                goal_vel_visualizer_cfg.markers["arrow"].scale    = (0.5, 0.5, 0.5)
+                current_vel_visualizer_cfg.markers["arrow"].scale = (0.5, 0.5, 0.5)
+
+                self.goal_vel_visualizer = VisualizationMarkers(
+                    goal_vel_visualizer_cfg
+                )
+                self.current_vel_visualizer = VisualizationMarkers(
+                    current_vel_visualizer_cfg
+                )
+            self.goal_vel_visualizer.set_visibility(True)
+            self.current_vel_visualizer.set_visibility(True)
+        else:
+            if hasattr(self, "goal_vel_visualizer"):
+                self.goal_vel_visualizer.set_visibility(False)
+                self.current_vel_visualizer.set_visibility(False)
+
+    def _debug_vis_callback(self, event):
+        """Post-update callback that updates arrow poses/scales each frame."""
+        # ensure robot is initialized
+        if not self._robot.is_initialized:
+            return
+
+        # base position for arrows (slightly above robot)
+        base_pos_w = self._robot.data.root_pos_w.clone()
+        base_pos_w[:, 2] += 0.5
+
+        # desired velocity (commands) and actual velocity (in base frame -> convert to arrow)
+        # Note: self._commands is in base-frame (x,y) matching robot.data.root_lin_vel_b
+        desired_xy = self._commands[:, :2]
+        actual_xy  = self._robot.data.root_lin_vel_b[:, :2]
+
+        vel_des_arrow_scale, vel_des_arrow_quat = self._resolve_xy_velocity_to_arrow(desired_xy, use_goal=True)
+        vel_arrow_scale, vel_arrow_quat         = self._resolve_xy_velocity_to_arrow(actual_xy, use_goal=False)
+
+        # visualize
+        self.goal_vel_visualizer.visualize(base_pos_w, vel_des_arrow_quat, vel_des_arrow_scale)
+        self.current_vel_visualizer.visualize(base_pos_w, vel_arrow_quat, vel_arrow_scale)
+
+    def _resolve_xy_velocity_to_arrow(self, xy_velocity: torch.Tensor, use_goal: bool) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert XY velocity vectors to marker scales and quaternions for arrow visualization.
+
+        Returns (scales, orientations) where orientations are quaternions in (w,x,y,z) and
+        scales are (num_envs, 3).
+        """
+        # pick the appropriate visualizer to read default scale
+        default_scale = self.goal_vel_visualizer.cfg.markers["arrow"].scale
+
+        arrow_scale = torch.tensor(default_scale, device=self.device).repeat(xy_velocity.shape[0], 1)
+        arrow_scale[:, 0] *= torch.linalg.norm(xy_velocity, dim=1) * 3.0
+
+        # direction -> yaw angle
+        heading_angle = torch.atan2(xy_velocity[:, 1], xy_velocity[:, 0])
+        zeros = torch.zeros_like(heading_angle)
+        arrow_quat = math_utils.quat_from_euler_xyz(zeros, zeros, heading_angle)
+
+        # convert from base -> world by rotating with base quaternion
+        base_quat_w = self._robot.data.root_quat_w
+        arrow_quat = math_utils.quat_mul(base_quat_w, arrow_quat)
+
+        return arrow_scale, arrow_quat
 
 
     #0000ff weight = +5.0 SPOT
