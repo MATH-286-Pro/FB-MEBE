@@ -4,6 +4,4 @@
 # LICENSE file in the root directory of this source tree.
 
 from .model import FBModel
-from .model import Config as FBModelConfig
-from .agent import Config as FBAgentConfig
 from .agent import FBAgent

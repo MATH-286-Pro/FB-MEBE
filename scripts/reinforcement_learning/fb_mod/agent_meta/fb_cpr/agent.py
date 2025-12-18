@@ -146,17 +146,17 @@ class FBcprAgent(FBAgent):
             expert_batch["next"]["observation"].to(self.device),
         )
 
-        self._model._obs_normalizer(train_obs)
-        self._model._obs_normalizer(train_next_obs)
+        self._model._F_normalizer(train_obs)
+        self._model._F_normalizer(train_next_obs)
 
-        with torch.no_grad(), eval_mode(self._model._obs_normalizer):
+        with torch.no_grad(), eval_mode(self._model._F_normalizer):
             train_obs, train_next_obs = (
-                self._model._obs_normalizer(train_obs),
-                self._model._obs_normalizer(train_next_obs),
+                self._model._F_normalizer(train_obs),
+                self._model._F_normalizer(train_next_obs),
             )
             expert_obs, expert_next_obs = (
-                self._model._obs_normalizer(expert_obs),
-                self._model._obs_normalizer(expert_next_obs),
+                self._model._F_normalizer(expert_obs),
+                self._model._F_normalizer(expert_next_obs),
             )
 
         torch.compiler.cudagraph_mark_step_begin()
@@ -185,11 +185,11 @@ class FBcprAgent(FBAgent):
 
         metrics.update(
             self.update_fb(
-                obs=train_obs,
+                OBS=train_obs,
                 action=train_action,
                 discount=discount,
-                next_obs=train_next_obs,
-                goal=train_next_obs,
+                NEXT_OBS=train_next_obs,
+                NEXT_GOAL=train_next_obs,
                 z=train_z,
                 q_loss_coef=q_loss_coef,
                 clip_grad_norm=clip_grad_norm,

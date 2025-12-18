@@ -9,47 +9,23 @@ import torch.nn.functional as F
 from typing import Dict, Tuple
 
 from .model import FBModel, config_from_dict
-from .model import Config as FBModelConfig
 from ..nn_models import weight_init, _soft_update_params, eval_mode
 from ..misc.zbuffer import ZBuffer
 from pathlib import Path
 import json
 import safetensors
 
-
-@dataclasses.dataclass
-class TrainConfig:
-    lr_f: float = 1e-4
-    lr_b: float = 1e-4
-    lr_actor: float = 1e-4
-    weight_decay: float = 0.0
-    clip_grad_norm: float = 0.0
-    fb_target_tau: float = 0.01
-    ortho_coef: float = 1.0
-    train_goal_ratio: float = 0.5
-    fb_pessimism_penalty: float = 0.0
-    actor_pessimism_penalty: float = 0.5
-    stddev_clip: float = 0.3
-    q_loss_coef: float = 0.0
-    batch_size: int = 1024
-    discount: float | None = None
-    use_mix_rollout: bool = False
-    update_z_every_step: int = 150
-    z_buffer_size: int = 10000
-
-
-@dataclasses.dataclass
-class Config:
-    model: FBModelConfig = dataclasses.field(default_factory=FBModelConfig)
-    train: TrainConfig = dataclasses.field(default_factory=TrainConfig)
-    cudagraphs: bool = False
-    compile: bool = False
+########### user define config start ############
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from toolbox.dataclass_pylance import AGENT_CFG, MODEL_CFG, TRAIN_CFG
+########### user define config end   ############
 
 torch._inductor.config.pattern_matcher = False
 
 class FBAgent:
     def __init__(self, **kwargs):
-        self.cfg = config_from_dict(kwargs, Config)
+        self.cfg = config_from_dict(kwargs, AGENT_CFG)
         self.cfg.train.fb_target_tau = float(min(max(self.cfg.train.fb_target_tau, 0), 1))
         self._model = FBModel(**dataclasses.asdict(self.cfg.model))
         self.setup_training()
@@ -59,6 +35,10 @@ class FBAgent:
     @property
     def device(self):
         return self._model.cfg.device
+
+    
+    def reward_inference(self, next_obs: torch.Tensor, reward: torch.Tensor) -> torch.Tensor:
+        return self._model.reward_inference(next_obs, reward, None)
 
     def setup_training(self) -> None:
         self._model.train(True)
@@ -117,16 +97,16 @@ class FBAgent:
         return self._model.act(obs, z, mean)
 
     @torch.no_grad()
-    def sample_mixed_z(self, train_goal: torch.Tensor | None = None, *args, **kwargs):
+    def sample_mixed_z(self, TRAIN_GOAL: dict[str, torch.Tensor] | None = None, *args, **kwargs):
         # samples a batch from the z distribution used to update the networks
         z = self._model.sample_z(self.cfg.train.batch_size, device=self.device)
 
-        if train_goal is not None:
+        if TRAIN_GOAL is not None:
             perm = torch.randperm(self.cfg.train.batch_size, device=self.device)
-            goals = self._model._backward_map(train_goal[perm])
-            goals = self._model.project_z(goals)
+            z_B = self._model._backward_map(TRAIN_GOAL['goal'][perm])
+            z_B = self._model.project_z(z_B)
             mask = torch.rand((self.cfg.train.batch_size, 1), device=self.device) < self.cfg.train.train_goal_ratio
-            z = torch.where(mask, goals, z)
+            z = torch.where(mask, z_B, z)
         return z
 
     def update(self, replay_buffer, step: int) -> Dict[str, torch.Tensor]:
@@ -140,13 +120,34 @@ class FBAgent:
         )
         discount = self.cfg.train.discount * ~terminated
 
-        self._model._obs_normalizer(obs)
-        self._model._obs_normalizer(next_obs)
-        with torch.no_grad(), eval_mode(self._model._obs_normalizer):
-            obs, next_obs = self._model._obs_normalizer(obs), self._model._obs_normalizer(next_obs)
+        # use obs without noise to update normalizer
+        self._model._policy_normalizer(obs['policy'])
+        self._model._F_normalizer(obs['obs'])
+        self._model._B_normalizer(obs['goal'])
+        self._model._critic_normalizer(obs['critic'])
+
+        self._model._policy_normalizer(next_obs['policy'])
+        self._model._F_normalizer(next_obs['obs'])
+        self._model._B_normalizer(next_obs['goal'])
+        self._model._critic_normalizer(next_obs['critic'])
+
+        OBS = {
+            "policy": self._model._policy_normalize(obs['policy']),
+            "obs"   : self._model._F_normalize(obs['obs']),
+            "goal"  : self._model._B_normalize(obs['goal']),
+            "critic": self._model._critic_normalize(obs['critic']),
+        }
+        NEXT_OBS = {
+            "policy": self._model._policy_normalize(next_obs['policy']),
+            "obs"   : self._model._F_normalize(next_obs['obs']),
+            "goal"  : self._model._B_normalize(next_obs['goal']),
+            "critic": self._model._critic_normalize(next_obs['critic']),
+        }
+
+        # OBS, NEXT_OBS these capitalized name means they are normalized
 
         torch.compiler.cudagraph_mark_step_begin()
-        z = self.sample_mixed_z(train_goal=next_obs).clone()
+        z = self.sample_mixed_z(TRAIN_GOAL=NEXT_OBS).clone()
         self.z_buffer.add(z)
 
         q_loss_coef = self.cfg.train.q_loss_coef if self.cfg.train.q_loss_coef > 0 else None
@@ -154,18 +155,18 @@ class FBAgent:
 
         torch.compiler.cudagraph_mark_step_begin()
         metrics = self.update_fb(
-            obs=obs,
+            OBS=OBS,
             action=action,
             discount=discount,
-            next_obs=next_obs,
-            goal=next_obs,
+            NEXT_OBS=NEXT_OBS,
+            NEXT_GOAL=NEXT_OBS,
             z=z,
             q_loss_coef=q_loss_coef,
             clip_grad_norm=clip_grad_norm,
         )
         metrics.update(
             self.update_actor(
-                obs=obs,
+                OBS=OBS,
                 action=action,
                 z=z,
                 clip_grad_norm=clip_grad_norm,
@@ -180,26 +181,26 @@ class FBAgent:
 
     def update_fb(
         self,
-        obs: torch.Tensor,
+        OBS: dict[str, torch.Tensor],
         action: torch.Tensor,
         discount: torch.Tensor,
-        next_obs: torch.Tensor,
-        goal: torch.Tensor,
+        NEXT_OBS: dict[str, torch.Tensor],
+        NEXT_GOAL: dict[str, torch.Tensor],
         z: torch.Tensor,
         q_loss_coef: float | None,
         clip_grad_norm: float | None,
     ) -> Dict[str, torch.Tensor]:
         with torch.no_grad():
-            dist = self._model._actor(next_obs, z, self._model.cfg.actor_std)
+            dist = self._model._actor(NEXT_OBS['policy'], z, self._model.cfg.actor_std)
             next_action = dist.sample(clip=self.cfg.train.stddev_clip)
-            target_Fs = self._model._target_forward_map(next_obs, z, next_action)  # num_parallel x batch x z_dim
-            target_B = self._model._target_backward_map(goal)  # batch x z_dim
+            target_Fs = self._model._target_forward_map(NEXT_OBS['obs'], z, next_action)  # num_parallel x batch x z_dim
+            target_B = self._model._target_backward_map(NEXT_GOAL['goal'])  # batch x z_dim
             target_Ms = torch.matmul(target_Fs, target_B.T)  # num_parallel x batch x batch
             _, _, target_M = self.get_targets_uncertainty(target_Ms, self.cfg.train.fb_pessimism_penalty)  # batch x batch
 
         # compute FB loss
-        Fs = self._model._forward_map(obs, z, action)  # num_parallel x batch x z_dim
-        B = self._model._backward_map(goal)  # batch x z_dim
+        Fs = self._model._forward_map(OBS['obs'], z, action)  # num_parallel x batch x z_dim
+        B = self._model._backward_map(NEXT_GOAL['goal'])  # batch x z_dim
         Ms = torch.matmul(Fs, B.T)  # num_parallel x batch x batch
 
         diff = Ms - discount * target_M  # num_parallel x batch x batch
@@ -249,26 +250,26 @@ class FBAgent:
                 "fb_loss": fb_loss,
                 "fb_diag": fb_diag,
                 "fb_offdiag": fb_offdiag,
+                "fb_q_loss": q_loss,
                 "orth_loss": orth_loss,
                 "orth_loss_diag": orth_loss_diag,
                 "orth_loss_offdiag": orth_loss_offdiag,
-                "q_loss": q_loss,
             }
         return output_metrics
 
     def update_actor(
         self,
-        obs: torch.Tensor,
+        OBS: dict[str, torch.Tensor],
         action: torch.Tensor,
         z: torch.Tensor,
         clip_grad_norm: float | None,
     ) -> Dict[str, torch.Tensor]:
-        return self.update_td3_actor(obs=obs, z=z, clip_grad_norm=clip_grad_norm)
+        return self.update_td3_actor(OBS=OBS, z=z, clip_grad_norm=clip_grad_norm)
 
-    def update_td3_actor(self, obs: torch.Tensor, z: torch.Tensor, clip_grad_norm: float | None) -> Dict[str, torch.Tensor]:
-        dist = self._model._actor(obs, z, self._model.cfg.actor_std)
+    def update_td3_actor(self, OBS: torch.Tensor, z: torch.Tensor, clip_grad_norm: float | None) -> Dict[str, torch.Tensor]:
+        dist = self._model._actor(OBS['policy'], z, self._model.cfg.actor_std)
         action = dist.sample(clip=self.cfg.train.stddev_clip)
-        Fs = self._model._forward_map(obs, z, action)  # num_parallel x batch x z_dim
+        Fs = self._model._forward_map(OBS['obs'], z, action)  # num_parallel x batch x z_dim
         Qs = (Fs * z).sum(-1)  # num_parallel x batch
         _, _, Q = self.get_targets_uncertainty(Qs, self.cfg.train.actor_pessimism_penalty)  # batch
         actor_loss = -Q.mean()
@@ -280,7 +281,8 @@ class FBAgent:
             torch.nn.utils.clip_grad_norm_(self._model._actor.parameters(), clip_grad_norm)
         self.actor_optimizer.step()
 
-        return {"actor_loss": actor_loss.detach(), "q": Q.mean().detach()}
+        return {"actor_loss": actor_loss.detach(), 
+                "actor_loss_fb": -Q.mean().detach()}
 
     def get_targets_uncertainty(
         self, preds: torch.Tensor, pessimism_penalty: torch.Tensor | float
@@ -299,7 +301,7 @@ class FBAgent:
         )
         return preds_mean, preds_unc, preds_mean - pessimism_penalty * preds_unc
 
-    def maybe_update_rollout_context(self, z: torch.Tensor | None, step_count: torch.Tensor) -> torch.Tensor:
+    def refresh_z(self, z: torch.Tensor | None, step_count: torch.Tensor) -> torch.Tensor:
         # get mask for environmets where we need to change z
         if z is not None:
             mask_reset_z = step_count % self.cfg.train.update_z_every_step == 0

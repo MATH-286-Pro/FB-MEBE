@@ -58,8 +58,8 @@ class FBcprModel(FBModel):
 
     @torch.no_grad()
     def critic(self, obs: torch.Tensor, z: torch.Tensor, action: torch.Tensor):
-        return self._critic(self._normalize(obs), z, action)
+        return self._critic(self._obs_normalize(obs), z, action)
 
     @torch.no_grad()
     def discriminator(self, obs: torch.Tensor, z: torch.Tensor):
-        return self._discriminator(self._normalize(obs), z)
+        return self._discriminator(self._obs_normalize(obs), z)

@@ -17,69 +17,34 @@ import json
 from ..nn_models import build_backward, build_forward, build_actor, eval_mode
 from .. import config_from_dict, load_model
 
-
-@dataclasses.dataclass
-class ActorArchiConfig:
-    hidden_dim: int = 1024
-    model: str = "simple"  # {'simple', 'residual'}
-    hidden_layers: int = 1
-    embedding_layers: int = 2
-
-
-@dataclasses.dataclass
-class ForwardArchiConfig:
-    hidden_dim: int = 1024
-    model: str = "simple"  # {'simple', 'residual'}
-    hidden_layers: int = 1
-    embedding_layers: int = 2
-    num_parallel: int = 2
-    ensemble_mode: str = "batch"  # {'batch', 'seq', 'vmap'}
-
-
-@dataclasses.dataclass
-class BackwardArchiConfig:
-    hidden_dim: int = 256
-    hidden_layers: int = 2
-    norm: bool = True
-
-
-@dataclasses.dataclass
-class ArchiConfig:
-    z_dim: int = 100
-    norm_z: bool = True
-    f: ForwardArchiConfig = dataclasses.field(default_factory=ForwardArchiConfig)
-    b: BackwardArchiConfig = dataclasses.field(default_factory=BackwardArchiConfig)
-    actor: ActorArchiConfig = dataclasses.field(default_factory=ActorArchiConfig)
-
-
-@dataclasses.dataclass
-class Config:
-    obs_dim: int = -1
-    action_dim: int = -1
-    device: str = "cpu"
-    archi: ArchiConfig = dataclasses.field(default_factory=ArchiConfig)
-    inference_batch_size: int = 500_000
-    seq_length: int = 1
-    actor_std: float = 0.2
-    norm_obs: bool = True
+########### user define config start ############
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
+from toolbox.dataclass_pylance import AGENT_CFG, MODEL_CFG, TRAIN_CFG
+########### user define config end   ############
 
 class FBModel(nn.Module):
     def __init__(self, **kwargs):
         super().__init__()
-        self.cfg = config_from_dict(kwargs, Config)
-        obs_dim, action_dim = self.cfg.obs_dim, self.cfg.action_dim
+        self.cfg = config_from_dict(kwargs, MODEL_CFG)
+
+        policy_dim = self.cfg.policy_dim
+        obs_dim    = self.cfg.obs_dim
+        goal_dim   = self.cfg.goal_dim
+        action_dim = self.cfg.action_dim
+        critic_dim = self.cfg.critic_dim
         arch = self.cfg.archi
 
         # create networks
-        self._backward_map = build_backward(obs_dim, arch.z_dim, arch.b)
-        self._forward_map = build_forward(obs_dim, arch.z_dim, action_dim, arch.f)
-        self._actor = build_actor(obs_dim, arch.z_dim, action_dim, arch.actor)
-        self._obs_normalizer = nn.BatchNorm1d(obs_dim, affine=False, momentum=0.01) if self.cfg.norm_obs else nn.Identity()
+        self._forward_map  = build_forward(obs_dim, arch.z_dim, action_dim, arch.f)
+        self._backward_map = build_backward(goal_dim, arch.z_dim, arch.b)
+        self._actor        = build_actor(policy_dim, arch.z_dim, action_dim, arch.actor)
 
-        # make sure the model is in eval mode and never computes gradients
-        self.train(False)
-        self.requires_grad_(False)
-        self.to(self.cfg.device)
+        self._policy_normalizer = nn.BatchNorm1d(policy_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._F_normalizer      = nn.BatchNorm1d(obs_dim,    affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._B_normalizer      = nn.BatchNorm1d(goal_dim,   affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+        self._critic_normalizer = nn.BatchNorm1d(critic_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
+
 
     def _prepare_for_train(self) -> None:
         # create TARGET networks
@@ -103,22 +68,7 @@ class FBModel(nn.Module):
         with (output_folder / "config.json").open("w+") as f:
             json.dump(dataclasses.asdict(self.cfg), f, indent=4)
 
-    def _normalize(self, obs: torch.Tensor):
-        with torch.no_grad(), eval_mode(self._obs_normalizer):
-            return self._obs_normalizer(obs)
-
-    @torch.no_grad()
-    def backward_map(self, obs: torch.Tensor):
-        return self._backward_map(self._normalize(obs))
-
-    @torch.no_grad()
-    def forward_map(self, obs: torch.Tensor, z: torch.Tensor, action: torch.Tensor):
-        return self._forward_map(self._normalize(obs), z, action)
-
-    @torch.no_grad()
-    def actor(self, obs: torch.Tensor, z: torch.Tensor, std: float):
-        return self._actor(self._normalize(obs), z, std)
-
+    ######################## convinient tools ####################
     def sample_z(self, size: int, device: str = "cpu") -> torch.Tensor:
         z = torch.randn((size, self.cfg.archi.z_dim), dtype=torch.float32, device=device)
         return self.project_z(z)
@@ -127,13 +77,43 @@ class FBModel(nn.Module):
         if self.cfg.archi.norm_z:
             z = math.sqrt(z.shape[-1]) * F.normalize(z, dim=-1)
         return z
+    
+    ######################## Network ####################
+    def _policy_normalize(self, policy: torch.Tensor):
+        with torch.no_grad(), eval_mode(self._policy_normalizer):
+            return self._policy_normalizer(policy)
+
+    def _F_normalize(self, obs: torch.Tensor):
+        with torch.no_grad(), eval_mode(self._F_normalizer):
+            return self._F_normalizer(obs)
+    
+    def _B_normalize(self, goal: torch.Tensor):
+        with torch.no_grad(), eval_mode(self._B_normalizer):
+            return self._B_normalizer(goal)
+    
+    def _critic_normalize(self, critic: torch.Tensor):
+        with torch.no_grad(), eval_mode(self._critic_normalizer):
+            return self._critic_normalizer(critic)
+
+    @torch.no_grad()
+    def backward_map(self, obs: torch.Tensor):
+        return self._backward_map(self._B_normalize(obs))
+
+    @torch.no_grad()
+    def forward_map(self, obs: torch.Tensor, z: torch.Tensor, action: torch.Tensor):
+        return self._forward_map(self._F_normalize(obs), z, action)
+
+    @torch.no_grad()
+    def actor(self, obs: torch.Tensor, z: torch.Tensor, std: float):
+        return self._actor(self._policy_normalize(obs), z, std)
 
     def act(self, obs: torch.Tensor, z: torch.Tensor, mean: bool = True) -> torch.Tensor:
         dist = self.actor(obs, z, self.cfg.actor_std)
         if mean:
             return dist.mean
         return dist.sample()
-
+    
+    ######################## Inference ####################
     def reward_inference(self, next_obs: torch.Tensor, reward: torch.Tensor, weight: torch.Tensor | None = None) -> torch.Tensor:
         num_batches = int(np.ceil(next_obs.shape[0] / self.cfg.inference_batch_size))
         z = 0
