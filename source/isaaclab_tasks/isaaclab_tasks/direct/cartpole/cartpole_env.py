@@ -20,40 +20,7 @@ from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass
 from isaaclab.utils.math import sample_uniform
 
-
-@configclass
-class CartpoleEnvCfg(DirectRLEnvCfg):
-    # env
-    decimation = 2
-    episode_length_s = 5.0
-    action_scale = 100.0  # [N]
-    action_space = 1
-    observation_space = 4
-    goal_space = 4
-    state_space = 0
-
-    # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
-
-    # robot
-    robot_cfg: ArticulationCfg = CARTPOLE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
-    cart_dof_name = "slider_to_cart"
-    pole_dof_name = "cart_to_pole"
-
-    # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=4.0, replicate_physics=True)
-
-    # reset
-    max_cart_pos = 3.0  # the cart is reset if it exceeds that position [m]
-    initial_pole_angle_range = [-0.25, 0.25]  # the range in which the pole angle is sampled from on reset [rad]
-
-    # reward scales
-    rew_scale_alive = 1.0
-    rew_scale_terminated = -2.0
-    rew_scale_pole_pos = -1.0
-    rew_scale_cart_vel = -0.01
-    rew_scale_pole_vel = -0.005
-
+from isaaclab_tasks.direct.cartpole.cartpole_cfg import CartpoleEnvCfg
 
 class CartpoleEnv(DirectRLEnv):
     cfg: CartpoleEnvCfg
@@ -96,7 +63,14 @@ class CartpoleEnv(DirectRLEnv):
             ),
             dim=-1,
         )
-        observations = {"policy": obs}
+        observations = {
+            "policy": obs,
+            "obs": obs,
+            "goal": obs,
+            "critic": obs,
+            "raw": obs,
+        }
+
         return observations
 
     def _get_rewards(self) -> torch.Tensor:
@@ -147,6 +121,30 @@ class CartpoleEnv(DirectRLEnv):
         self.cartpole.write_root_velocity_to_sim(default_root_state[:, 7:], env_ids)
         self.cartpole.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
+
+    #0000ff User added
+    def get_env_metrics(self) -> dict:
+        return {}
+
+    #0000ff User added
+    def get_reg_reward(self) -> torch.Tensor:
+        return torch.zeros(self.num_envs, device=self.device)
+    
+    #0000ff User added
+    def reward_function(self, obs: torch.Tensor) -> torch.Tensor:
+        total_reward, _ = compute_rewards(
+            self.cfg.rew_scale_alive,
+            self.cfg.rew_scale_terminated,
+            self.cfg.rew_scale_pole_pos,
+            self.cfg.rew_scale_cart_vel,
+            self.cfg.rew_scale_pole_vel,
+            obs[:, 0],
+            obs[:, 1],
+            obs[:, 2],
+            obs[:, 3],
+            torch.zeros(obs.shape[0], device=self.device),
+        )
+        return total_reward
 
 @torch.jit.script
 def compute_rewards(
