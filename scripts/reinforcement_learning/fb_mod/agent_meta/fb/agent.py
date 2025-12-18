@@ -45,6 +45,7 @@ class Config:
     cudagraphs: bool = False
     compile: bool = False
 
+torch._inductor.config.pattern_matcher = False
 
 class FBAgent:
     def __init__(self, **kwargs):
