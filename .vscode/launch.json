@@ -38,5 +38,15 @@
                 // "env.headless=False",
             ],
         },
+        {
+            "name": "FB Play_xbox",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/reinforcement_learning/fb_mod/play_xbox.py",
+            "console": "integratedTerminal",
+            "args" : [
+                "env.headless=False",
+            ],
+        },
     ]
 }
