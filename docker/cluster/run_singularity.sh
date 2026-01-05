@@ -75,6 +75,9 @@ singularity exec \
 # copy resulting cache files back to host
 rsync -azPv $TMPDIR/docker-isaac-sim $CLUSTER_ISAAC_SIM_CACHE_DIR/..
 
+# copy the entire isaaclab directory back to host (including logs, outputs, and saved models)
+rsync -azPv $TMPDIR/$dir_name/ $CLUSTER_ISAACLAB_DIR/
+
 # if defined, remove the temporary isaaclab directory pushed when the job was submitted
 if $REMOVE_CODE_COPY_AFTER_JOB; then
     rm -rf $1
