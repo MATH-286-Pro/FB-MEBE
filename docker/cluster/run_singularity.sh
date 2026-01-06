@@ -68,6 +68,7 @@ singularity exec \
     -B $TMPDIR/docker-isaac-sim/documents:${DOCKER_USER_HOME}/Documents:rw \
     -B $TMPDIR/$dir_name:/workspace/isaaclab:rw \
     -B $CLUSTER_ISAACLAB_DIR/logs:/workspace/isaaclab/logs:rw \
+    --env WANDB_API_KEY="${WANDB_API_KEY}" \
     --nv --writable --containall $TMPDIR/$2.sif \
     bash -c "export ISAACLAB_PATH=/workspace/isaaclab && cd /workspace/isaaclab && /isaac-sim/python.sh ${CLUSTER_PYTHON_EXECUTABLE} ${@:3}"
 
