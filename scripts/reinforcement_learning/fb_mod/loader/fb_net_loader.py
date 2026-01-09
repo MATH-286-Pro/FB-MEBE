@@ -17,17 +17,17 @@ class FBPolicyLoader:
         # 用 OmegaConf 加载 hydra 配置文件
         hydra_config = omgcf.OmegaConf.load(str(config_path))
         omgcf.OmegaConf.resolve(hydra_config)
-        model_cfg = hydra_config.agent.model
 
         # 获取配置
-        self.model_cfg = model_cfg
+        self.agent_cfg = hydra_config.agent
+        self.model_cfg = hydra_config.agent.model
 
 
         # 创建网络结构
-        policy_dim = model_cfg.policy_dim
-        goal_dim   = model_cfg.goal_dim
-        action_dim = model_cfg.action_dim
-        archi      = model_cfg.archi
+        policy_dim = self.model_cfg.policy_dim
+        goal_dim   = self.model_cfg.goal_dim
+        action_dim = self.model_cfg.action_dim
+        archi      = self.model_cfg.archi
 
         self._backward_map = meta.build_backward(goal_dim, archi.z_dim, archi.b)
         self._actor        = meta.build_actor(policy_dim, archi.z_dim, action_dim, archi.actor)
