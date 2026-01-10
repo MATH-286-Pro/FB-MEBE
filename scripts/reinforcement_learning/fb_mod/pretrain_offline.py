@@ -50,6 +50,7 @@ from toolbox.functions_reward import reward_fn
 
 from agent_crl.agent import FB_CRL_AGENT
 from agent_meta.fb.agent import FBAgent as FB_META_Agent
+from agent_meta.fb.agent_AWAC import FBAWAgent as FB_AWAC_Agent
 from toolbox.functions_visualization import PLOT_VALUE, PLOT_DENSITY
 
 ##########################################
@@ -148,7 +149,7 @@ class WORKSPACE:
         # 2.创建 agent
         if train_cfg.agent == 'meta':
             agent_cfg_dict = omgcf.OmegaConf.to_container(self.agent_cfg, resolve=True)  # type: ignore
-            self.agent = FB_META_Agent(**agent_cfg_dict)  # type: ignore
+            self.agent = FB_AWAC_Agent(**agent_cfg_dict)  # type: ignore
         elif train_cfg.agent == 'crl':
             self.agent = FB_CRL_AGENT(self.agent_cfg)
 
