@@ -1,0 +1,365 @@
+# ############ Metamotivo Dependency #############
+# from metamotivo.fb_cpr import FBcprAgent, FBcprAgentConfig
+# from metamotivo.fb import FBAgent
+
+############ Hydra Dependency #############
+import os, sys
+import hydra
+import omegaconf as omgcf
+
+# read hydra config
+config_dir = os.path.join(os.path.dirname(__file__), 'configs')
+
+# Parse config name from command line arguments
+config_name = 'Isaaclab_pretrain_config_base'  # default config
+overrides = []
+for i, arg in enumerate(sys.argv[1:]):
+    if arg.startswith('--config-name='):
+        config_name = arg.split('=', 1)[1]
+    elif i > 0 and sys.argv[i] == '--config-name':
+        config_name = arg
+    else:
+        overrides.append(arg)
+
+with hydra.initialize_config_dir(config_dir=os.path.abspath(config_dir), version_base="1.1"):
+    hydra_cfg = hydra.compose(config_name=config_name, overrides=overrides)
+
+app_cfg = {
+    "headless": hydra_cfg.env.headless,
+    "device":   hydra_cfg.env.device,
+    "enable_cameras": hydra_cfg.env.video,
+}
+
+############ Launch Isaaclab APP #############
+from isaaclab.app import AppLauncher
+simulation_app = AppLauncher(app_cfg).app
+
+############ IsaacLab Dependency #############
+import gymnasium as gym
+from isaaclab.envs import DirectRLEnvCfg
+from isaaclab_tasks.utils import load_cfg_from_registry
+
+############ User Dependency #############
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from wrapper.wrapper_env import FB_VecEnvWrapper
+from wrapper.wrapper_video import RecordVideo_TRAIN_GC, RecordVideo_EVAL_GC
+from buffer import DictBuffer
+from toolbox.dataclass_metrics import TRAIN_METRICS_CLASS, EVAL_METRICS_CLASS
+from toolbox.dataclass_pylance import AGENT_CFG
+from toolbox.functions_reward import reward_fn
+
+from agent_crl.agent import FB_CRL_AGENT
+from agent_meta.fb.agent import FBAgent as FB_META_Agent
+from toolbox.functions_visualization import PLOT_VALUE, PLOT_DENSITY
+
+##########################################
+import torch
+torch.set_float32_matmul_precision("high")
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+import random
+import time
+from pathlib import Path
+import numpy as np
+import wandb
+import datetime
+import copy
+
+#########################################
+
+def set_seed_everywhere(seed: int):
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+
+########################################################################################################################
+
+class WORKSPACE:
+    def __init__(self, train_cfg, env_cfg, agent_cfg: AGENT_CFG):
+
+        # 创建变量
+        self.env_cfg   = env_cfg
+        self.agent_cfg = agent_cfg
+        self.train_cfg = train_cfg
+        self.device    = hydra_cfg.env.device
+
+        self._default_command = {
+            "lin_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
+            "ang_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
+            "gravity": torch.tensor([0.0, 0.0, -1.0], device=self.device),
+            "height": 0.28,
+        }
+
+        # 创建保存路径
+        self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M")
+        self.work_dir = Path.cwd() / f"exp_{hydra_cfg.train.machine}" / 'fb_mod' / hydra_cfg.env.task / hydra_cfg.wandb.group / self.timestamp
+        self.work_dir.mkdir(parents=True, exist_ok=True)
+
+        # 保存 hydra_cfg 配置文件
+        omgcf.OmegaConf.save(config=hydra_cfg, f=self.work_dir / 'hydra_config.yaml')
+
+        # 实例化 class
+        # 0.创建 wandb
+        if hydra_cfg.wandb.use_wandb:
+            wandb.init(entity  = hydra_cfg.wandb.entity, 
+                       project = hydra_cfg.wandb.project,
+                       group   = hydra_cfg.wandb.group, 
+                       name    = f"{hydra_cfg.wandb.name}_{self.timestamp}",
+                       config  = omgcf.OmegaConf.to_container(hydra_cfg, resolve=True))  # type: ignore
+
+        # 1.创建 env
+        self.env = gym.make(
+            hydra_cfg.env.task,
+            cfg = self.env_cfg,
+            render_mode = 'rgb_array' if hydra_cfg.env.video else None,
+        )
+        if hydra_cfg.env.video:
+            video_args_pretrain = {
+                'video_folder': str(self.work_dir / 'videos_pretrain'),
+                'step_trigger': lambda step: step % hydra_cfg.env.video_interval == 0,
+                'video_length': hydra_cfg.env.video_length,
+                'name_prefix': 'pretrain',
+                'disable_logger': True,
+                'use_wandb': hydra_cfg.wandb.use_wandb,
+            }
+            video_args_eval = {
+                'video_folder': str(self.work_dir / 'videos_eval'),
+                'step_trigger': lambda step: step % 250 == 0,
+                'video_length': hydra_cfg.env.video_length,
+                'name_prefix': 'eval',
+                'disable_logger': True,
+                'use_wandb': hydra_cfg.wandb.use_wandb,
+            }
+            self.train_env = RecordVideo_TRAIN_GC(self.env, **video_args_pretrain)
+            self.eval_env  = RecordVideo_EVAL_GC(self.env, **video_args_eval)
+
+            self.train_env = FB_VecEnvWrapper(self.train_env) # type: ignore
+            self.eval_env  = FB_VecEnvWrapper(self.eval_env)  # type: ignore
+        
+        else:
+            self.train_env = FB_VecEnvWrapper(self.env)  # type: ignore
+            self.eval_env  = FB_VecEnvWrapper(self.env)  # type: ignore
+
+        # 2.创建 agent
+        if train_cfg.agent == 'meta':
+            agent_cfg_dict = omgcf.OmegaConf.to_container(self.agent_cfg, resolve=True)  # type: ignore
+            self.agent = FB_META_Agent(**agent_cfg_dict)  # type: ignore
+        elif train_cfg.agent == 'crl':
+            self.agent = FB_CRL_AGENT(self.agent_cfg)
+
+
+        # 3.创建 buffer
+        self.replay_buffer = {
+            "train": DictBuffer(self.train_cfg.replay_buffer_capacity, self.device)
+        }
+        offline_data_path = "/home/jiajun_hu/Documents/fb_hw/exp_local/fb_mod/Isaac-Flat-Unitree-Go2-Rnd-full-FB-v0/F34_B10/ABS_KAIST/2025-12-25_10-36/offline_data.pt"
+        offline_data = torch.load(offline_data_path)      
+        self.replay_buffer["train"].extend(offline_data)
+        del offline_data
+
+        # 4.创建各种记录器
+        self.train_metrics = TRAIN_METRICS_CLASS()
+        self.eval_metrics  = EVAL_METRICS_CLASS()
+
+
+    def close(self):
+        self.train_env.close()
+        self.eval_env.close()
+        wandb.finish()
+
+    @property
+    def time(self):
+        if not hasattr(self, '_start_time'):
+            self._start_time = time.time()
+            return f"00:00:00"
+        else:
+            elapsed = time.time() - self._start_time
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = int(elapsed % 60)
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+    ####################################################################################################################
+    def train(self):
+
+        td, _ = self.train_env.reset()
+        z = None
+
+        for t in range(0, self.train_cfg.num_train_steps+1):
+
+            # Update agent
+            if t % self.train_cfg.interval_update == 0:
+                start_time = time.time()
+                for _ in range(self.train_cfg.num_updates):
+                    metrics_pretrain = self.agent.update(self.replay_buffer, t)
+                    self.train_metrics.update(metrics_pretrain, key_prefix="pretrain/")
+                print(f"Update time: {time.time() - start_time:.2f} seconds", end='\r')
+            
+                # Upload metrics
+                if t % self.train_cfg.interval_log == 0:
+                    if hydra_cfg.wandb.use_wandb:
+                        wandb.log(self.train_metrics.mean, step=t)
+                    self.train_metrics.clear()
+                    
+                    # upload normalizer data
+                    if hydra_cfg.wandb.use_wandb:
+                        means = self.agent._model._policy_normalizer.mean
+                        stds  = self.agent._model._policy_normalizer.std
+
+                        RANGE = len(means)
+                        # pad indices with leading zeros so wandb sorts keys numerically
+                        width = len(str(max(0, RANGE - 1)))
+                        for i in range(RANGE):
+                            idx = f"{i:0{width}d}"
+                            wandb.log({f"obs_normalizer/mean_{idx}": means[i].item(), 
+                                       f"obs_normalizer/std_{idx}":  stds[i].item()}, step=t)
+
+            # Plot goal density every 10000 steps
+            if t > 0 and t % 10000 == 0 and self.replay_buffer["train"].size >= self.train_cfg.save_buffer_size:
+                # Sample 10k data from replay buffer
+                sampled_data = self.replay_buffer["train"].sample(self.train_cfg.save_buffer_size)
+                goals = sampled_data['observation']['goal']
+                
+                vx = goals[:, 0].cpu().numpy()
+                vy = goals[:, 1].cpu().numpy()
+                dist_image = PLOT_DENSITY(vx, vy)
+                
+                # Calculate convex hull volume for vx, vy, wz
+                goal_3d = goals[:, [0, 1, 5]]
+                hull_3d = ConvexHull(goal_3d.cpu().numpy())
+                convex_hull_volume_3d = hull_3d.volume
+
+                hull_full = ConvexHull(goals.cpu().numpy())
+                convex_hull_volume_full = hull_full.volume
+ 
+                
+                # Log to wandb
+                if hydra_cfg.wandb.use_wandb:
+                    wandb.log({
+                        "goal_density": wandb.Image(dist_image),
+                        "exploration/goal_convex_hull_volume": convex_hull_volume_3d,
+                        "exploration/goal_convex_hull_volume_full": convex_hull_volume_full,
+                    }, step=t)
+
+
+            # Evaluate agent
+            if t % self.train_cfg.interval_eval == 0 and t >0 and self.replay_buffer["train"].size >= self.train_cfg.num_eval_sample and self.train_cfg.eval:
+                if hydra_cfg.env.video:
+                    self.train_env.env.step_id = t
+
+                self.env.unwrapped.set_debug_vis(True)  # type: ignore     
+                self.eval([0.0, 0.0, 0.0])
+                self.eval([+0.5, 0.0, 0.0])
+                self.eval([+1.0, 0.0, 0.0])
+                self.eval([-0.5, 0.0, 0.0])
+                self.eval([-1.0, 0.0, 0.0])
+                self.eval([0.0, +0.5, 0.0])
+                self.eval([0.0, -0.5, 0.0])
+                self.eval([0.0, 0.0, +1.0])
+                self.eval([0.0, 0.0, -1.0])
+                self.env.unwrapped.set_debug_vis(False)  # type: ignore
+
+                if hydra_cfg.wandb.use_wandb:
+                    wandb.log(self.eval_metrics.get_tasks_metrics(), step = t)
+                self.eval_metrics.clear()
+
+            if t % self.train_cfg.interval_log == 0:
+                print(f"| S:{t} | T:{self.time} |")
+
+            # Save FB model
+            if t > 0 and t % self.train_cfg.interval_save_model == 0:
+                model_dir = self.work_dir / 'models'
+                model_dir.mkdir(parents=True, exist_ok=True)
+
+                # Save buffer
+                buffer_data = self.replay_buffer['train'].sample(self.train_cfg.save_buffer_size)['observation']
+                torch.save(buffer_data, model_dir / f'replay_buffer_step_{t}.pt')
+                del buffer_data
+
+                # Save model)
+                torch.save(
+                    {'actor':             self.agent._model._actor.state_dict(),
+                     'policy_normalizer': self.agent._model._policy_normalizer.state_dict(),
+                     'B':                 self.agent._model._backward_map.state_dict(),
+                     'B_normalizer':      self.agent._model._B_normalizer.state_dict(),},
+                    model_dir / f'model_step_{t}.pt'
+                )
+
+
+    def eval(self, command_xyw):
+
+        self.eval_env.eval_task(command_xyw)
+
+        with torch.no_grad():
+
+            # 推理阶段
+            data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
+            obs  = data['observation']['raw']
+            goal = data['observation']['goal'].detach().clone()  # no noise
+
+            command = copy.deepcopy(self._default_command)
+            command['lin_vel'][:2] = torch.tensor(command_xyw[0:2], device=self.device)
+            command['ang_vel'][2]  = torch.tensor(command_xyw[2],   device=self.device)
+
+            reward = reward_fn(obs, command)
+
+            z_r = self.agent.reward_inference(goal, reward)
+            z_r = z_r.expand(self.eval_env.num_envs, -1)  # type: ignore
+
+            # 开始测试
+            td, _ = self.eval_env.reset()
+
+            for _ in range(250):
+                obs = td['obs']
+                action = self.agent.act(obs['policy'], z_r, mean=True)
+                td, _, _, _, info = self.eval_env.step(action)
+                
+                self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
+                self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
+        
+        if hydra_cfg.env.video:
+            self.eval_env.stop_recording(f"{command_xyw}", step=self.train_env.env.step_id)
+        self.eval_env.train_task()
+
+########################################################################################################################
+
+def env_cfg_from_hydra(hydra_cfg) -> DirectRLEnvCfg:
+    env_cfg = load_cfg_from_registry(hydra_cfg.env.task, "env_cfg_entry_point")
+    env_cfg.sim.device     = hydra_cfg.env.device    # type: ignore
+    env_cfg.scene.num_envs = hydra_cfg.env.num_envs  # type: ignore
+    env_cfg.seed           = hydra_cfg.env.seed      # type: ignore
+    env_cfg.viewer.resolution = tuple(hydra_cfg.env.video_resolution)  # type: ignore
+    return env_cfg                                   # type: ignore
+
+def main():
+
+    set_seed_everywhere(hydra_cfg.env.seed)
+
+    env_cfg: DirectRLEnvCfg = env_cfg_from_hydra(hydra_cfg)
+
+    # update obs_dim and action_dim for 'agent_cfg', will influence 'agent.model'
+    hydra_cfg.agent.model.policy_dim     = env_cfg.policy_space      # type: ignore
+    hydra_cfg.agent.model.obs_dim        = env_cfg.observation_space
+    hydra_cfg.agent.model.goal_dim       = env_cfg.goal_space        # type: ignore
+    hydra_cfg.agent.model.critic_dim     = env_cfg.critic_space      # type: ignore
+    hydra_cfg.agent.model.action_dim     = env_cfg.action_space
+    hydra_cfg.train.replay_buffer_capacity = hydra_cfg.env.num_envs * hydra_cfg.train.replay_buffer_N
+    hydra_cfg.env.action_scale           = env_cfg.action_scale      # type: ignore
+
+    agent_cfg = hydra_cfg.agent
+    train_cfg = hydra_cfg.train
+
+    ws = WORKSPACE(train_cfg, env_cfg, agent_cfg)
+    ws.train()
+    ws.close()
+    
+    simulation_app.close()
+
+if __name__ == '__main__':
+    main()
