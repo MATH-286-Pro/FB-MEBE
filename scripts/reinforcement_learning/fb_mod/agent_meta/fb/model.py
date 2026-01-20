@@ -58,7 +58,7 @@ class FBModel(nn.Module):
     def to(self, *args, **kwargs):
         device, _, _, _ = torch._C._nn._parse_to(*args, **kwargs)
         if device is not None:
-            self.cfg.device = device.type  # type: ignore
+            self.cfg.device = str(device)
         return super().to(*args, **kwargs)
 
     @classmethod
