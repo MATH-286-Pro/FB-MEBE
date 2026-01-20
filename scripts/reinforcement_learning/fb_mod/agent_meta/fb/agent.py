@@ -32,6 +32,9 @@ class FBAgent:
         self.setup_compile()
         self._model.to(self.cfg.model.device)
 
+        self.t = 0
+        self.update_actor_freq = 2
+
     @property
     def device(self):
         return self._model.cfg.device
@@ -197,14 +200,17 @@ class FBAgent:
                 )
             )
 
-        metrics.update(
-            self.update_actor(
-                OBS=OBS,
-                action=action,
-                z=z,
-                clip_grad_norm=clip_grad_norm,
+        self.t += 1
+        if self.t % self.update_actor_freq == 0:
+            metrics.update(
+                self.update_actor(
+                    OBS=OBS,
+                    action=action,
+                    z=z,
+                    clip_grad_norm=clip_grad_norm,
+                )
             )
-        )
+            self.t = 0
 
         with torch.no_grad():
             _soft_update_params(self._forward_map_paramlist, self._target_forward_map_paramlist, self.cfg.train.fb_target_tau)
