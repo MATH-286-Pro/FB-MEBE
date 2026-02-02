@@ -311,38 +311,14 @@ class FBAgent:
         else:
             z = self._model.sample_z(step_count.shape[0], device=self.cfg.model.device)
         return z
+    
 
-    @classmethod
-    def load(cls, path: str, device: str | None = None):
-        path = Path(path)
-        with (path / "config.json").open() as f:
-            loaded_config = json.load(f)
-        if device is not None:
-            loaded_config["model"]["device"] = device
-        agent = cls(**loaded_config)
-        optimizers = torch.load(str(path / "optimizers.pth"), weights_only=True)
-        agent.actor_optimizer.load_state_dict(optimizers["actor_optimizer"])
-        agent.backward_optimizer.load_state_dict(optimizers["backward_optimizer"])
-        agent.forward_optimizer.load_state_dict(optimizers["forward_optimizer"])
-
-        safetensors.torch.load_model(agent._model, path / "model/model.safetensors", device=device)
-        return agent
-
-    def save(self, output_folder: str) -> None:
-        output_folder = Path(output_folder)
-        output_folder.mkdir(exist_ok=True)
-        with (output_folder / "config.json").open("w+") as f:
-            json.dump(dataclasses.asdict(self.cfg), f, indent=4)
-        # save optimizer
+    def save(self, path: str):
         torch.save(
-            {
-                "actor_optimizer": self.actor_optimizer.state_dict(),
-                "backward_optimizer": self.backward_optimizer.state_dict(),
-                "forward_optimizer": self.forward_optimizer.state_dict(),
-            },
-            output_folder / "optimizers.pth",
+            {'actor':                self._model._actor.state_dict(),
+                'policy_normalizer': self._model._policy_normalizer.state_dict(),
+                'B':                 self._model._backward_map.state_dict(),
+                'B_normalizer':      self._model._B_normalizer.state_dict(),},
+            path
         )
-        # save model
-        model_folder = output_folder / "model"
-        model_folder.mkdir(exist_ok=True)
-        self._model.save(output_folder=str(model_folder))
+        print(f"Model saved to {path}")
