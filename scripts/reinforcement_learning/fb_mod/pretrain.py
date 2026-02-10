@@ -47,8 +47,10 @@ from buffer import DictBuffer
 from toolbox.dataclass_metrics import TRAIN_METRICS_CLASS, EVAL_METRICS_CLASS
 from toolbox.dataclass_pylance import AGENT_CFG
 from toolbox.functions_reward import reward_fn
+from toolbox.functions_entropy import compute_entropy
 
 from agent_crl.agent import FB_CRL_AGENT
+from toolbox.functions_visualization import PLOT_VALUE, PLOT_DENSITY
 
 ##########################################
 import torch
@@ -65,6 +67,31 @@ import numpy as np
 import wandb
 import datetime
 import copy
+
+#################### USER DEFINE VARIABLES #####################
+VX = 0
+VY = 1
+VZ = 2
+WX = 3
+WY = 4
+WZ = 5
+GX = 6
+GY = 7
+GZ = 8
+H  = 9
+
+ENTROPY_RANGE_DICT = {
+    'vx': [-3.0, 3.0],
+    'vy': [-3.0, 3.0],
+    'vz': [-3.0, 3.0],
+    'wx': [-5.0, 5.0],
+    'wy': [-5.0, 5.0],
+    'wz': [-5.0, 5.0],
+    'gx': [-1.0, +1.0],
+    'gy': [-1.0, +1.0],
+    'gz': [-1.0, +1.0],
+    'h ': [0.0, 1.0],
+}
 
 #################### USER DEFINE FUNCTIONS #####################
 
@@ -247,23 +274,11 @@ class WORKSPACE:
                         wandb.log(self.train_metrics.mean, step=t)
                     self.train_metrics.clear()
                     
-                    # upload normalizer data
-                    if hydra_cfg.wandb.use_wandb:
-                        means = self.agent._model._policy_normalizer.mean
-                        stds  = self.agent._model._policy_normalizer.std
-
-                        RANGE = len(means)
-                        # pad indices with leading zeros so wandb sorts keys numerically
-                        width = len(str(max(0, RANGE - 1)))
-                        for i in range(RANGE):
-                            idx = f"{i:0{width}d}"
-                            wandb.log({f"obs_normalizer/mean_{idx}": means[i].item(), 
-                                       f"obs_normalizer/std_{idx}":  stds[i].item()}, step=t)
 
             # Evaluate agent
             if self.train_cfg.eval and t % self.train_cfg.interval_eval == 0 and t >= self.train_cfg.num_seeding_steps and self.replay_buffer["train"].size >= self.train_cfg.num_eval_sample:
                 self.env.unwrapped.set_debug_vis(True)  # type: ignore     
-                self.eval([0.0, 0.0, 0.0])           
+                self.eval([0.0, 0.0, 0.0])
                 self.eval([+0.5, 0.0, 0.0])
                 self.eval([+1.0, 0.0, 0.0])
                 self.eval([-0.5, 0.0, 0.0])
@@ -295,6 +310,33 @@ class WORKSPACE:
 
                 if hydra_cfg.env.video:
                     self.train_env.env.step_id = step_id
+
+                ##############################################
+                #####        FB Data Quality Check       #####
+                ##### To FB, Data quality is everything! #####
+                ##############################################
+
+                # Sample 10k data from replay buffer
+                sampled_data = self.replay_buffer["train"].sample(self.train_cfg.save_buffer_size)
+                goals = sampled_data['observation']['goal']
+                
+                # Scatter Plots
+                dist_image_vx_vy = PLOT_DENSITY(goals[:, VX], goals[:, VY])
+                dist_image_vx_wz = PLOT_DENSITY(goals[:, VX], goals[:, WZ])
+
+                # compute entropy
+                entropy_VxVyWz = compute_entropy(goals[:, [VX, VY, WZ]], ENTROPY_RANGE_DICT, bins=50)
+                entropy_GxGyGz = compute_entropy(goals[:, [GX, GY, GZ]], ENTROPY_RANGE_DICT, bins=50)
+
+                # Log to wandb
+                if hydra_cfg.wandb.use_wandb:
+                    wandb.log({
+                        "goal_density_vx_vy": wandb.Image(dist_image_vx_vy),
+                        "goal_density_vx_wz": wandb.Image(dist_image_vx_wz),
+                        "exploration/entropy_VxVyWz": entropy_VxVyWz,
+                        "exploration/entropu_GxGyGz": entropy_GxGyGz,
+                    }, step=t)
+                
 
             if t % self.train_cfg.interval_log == 0:
                 print(f"| S:{t} | T:{self.time} |")
