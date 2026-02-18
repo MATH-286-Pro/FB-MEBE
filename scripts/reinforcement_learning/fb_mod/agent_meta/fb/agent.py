@@ -19,9 +19,19 @@ import safetensors
 import sys, os
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 from toolbox.dataclass_pylance import AGENT_CFG, MODEL_CFG, TRAIN_CFG
+from density_estimator.agent_normalizing_flow import NF_AGENT
 ########### user define config end   ############
 
 torch._inductor.config.pattern_matcher = False
+
+@dataclasses.dataclass
+class GOAL_RANGE:
+    vx = [-1.8, +1.8]
+    vy = [-1.3, +1.3]
+    vz = [-1.0, +1.0]
+    wx = [-0.3, +0.3]
+    wy = [-0.3, +0.3]
+    wz = [-2.0, +2.0]
 
 class FBAgent:
     def __init__(self, **kwargs):
@@ -32,8 +42,14 @@ class FBAgent:
         self.setup_compile()
         self._model.to(self.cfg.model.device)
 
-        # Reverse Sampler API
-        self.estimator = ...
+        self.estimator = NF_AGENT(
+            cfg = self.cfg,
+            goal_indices = [0, 1],
+            update_freq  = 1000,
+            goal_range   = [GOAL_RANGE.vx,
+                            GOAL_RANGE.vy],
+            device = self.cfg.model.device,
+        )
 
         self.t = 0
         self.update_actor_freq = 2
