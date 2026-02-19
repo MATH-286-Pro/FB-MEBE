@@ -187,7 +187,11 @@ class FBAgent:
 
         # OBS, NEXT_OBS these capitalized name means they are normalized
 
-        self.estimator.observe(obs['goal'])
+        # filter out data with [gz > -0.93]
+        gz = obs['goal'][:, 8]
+        valid_mask = gz <= -0.93
+        if valid_mask.any():
+            self.estimator.observe(obs['goal'][valid_mask])
 
         torch.compiler.cudagraph_mark_step_begin()
         z = self.sample_mixed_z(TRAIN_GOAL=NEXT_OBS).clone()
