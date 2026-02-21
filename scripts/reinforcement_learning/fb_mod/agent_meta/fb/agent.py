@@ -315,9 +315,9 @@ class FBAgent:
         metrics["actor_loss_fb"] = actor_loss.detach().clone()
 
         if self.cfg.model.archi.critic.enable:
-            Qs_critic = self._model._critic(OBS['critic'], z, action)  # with grad
+            Qs_critic = self._model._critic(OBS['critic'], action)  # with grad
             _, _, Q_critic = self.get_targets_uncertainty(Qs_critic, self.cfg.train.critic_pessimism_penalty)
-
+            
             weight = Q_fb.abs().mean().detach()
             actor_loss -= Q_critic.mean() * self.cfg.train.reg_coeff * weight
             metrics["actor_loss_critic"] = -(Q_critic.mean() * self.cfg.train.reg_coeff * weight).detach().clone()
@@ -348,13 +348,13 @@ class FBAgent:
         with torch.no_grad():
             dist = self._model._actor(NEXT_OBS['policy'], z, std=self.cfg.model.actor_std)
             next_action = dist.sample(clip=self.cfg.train.stddev_clip)
-            next_Qs = self._model._target_critic(NEXT_OBS['critic'], z, next_action)
+            next_Qs = self._model._target_critic(NEXT_OBS['critic'], next_action)
             Q_mean, Q_unc, next_Q = self.get_targets_uncertainty(next_Qs, self.cfg.train.critic_pessimism_penalty)
 
             target_Q = reward_reg + discount * next_Q
             target_Qs = target_Q.expand(num_parallel, -1, -1)
 
-        Qs = self._model._critic(OBS['critic'], z, action)  # with grad
+        Qs = self._model._critic(OBS['critic'], action)  # with grad
         critic_loss = 0.5 * num_parallel * F.mse_loss(Qs, target_Qs)
 
         # optimize critic

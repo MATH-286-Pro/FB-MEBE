@@ -14,7 +14,7 @@ from pathlib import Path
 from safetensors.torch import save_model as safetensors_save_model
 import json
 
-from ..nn_models import build_backward, build_forward, build_actor, eval_mode
+from ..nn_models import build_backward, build_forward, build_actor, eval_mode, build_critic
 from .. import config_from_dict, load_model
 
 ########### user define config start ############
@@ -46,7 +46,7 @@ class FBModel(nn.Module):
         self._critic_normalizer = nn.BatchNorm1d(critic_dim, affine=False, momentum=self.cfg.momentum) if self.cfg.norm_obs else nn.Identity()
 
         if self.cfg.archi.critic.enable:
-            self._critic        = build_forward(critic_dim, arch.z_dim, action_dim, arch.critic, output_dim=1)
+            self._critic        = build_critic(critic_dim, action_dim, arch.critic, output_dim=1)
 
     def _prepare_for_train(self) -> None:
         # create TARGET networks

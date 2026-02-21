@@ -500,3 +500,43 @@ class Norm(nn.Module):
 
     def forward(self, x) -> torch.Tensor:
         return math.sqrt(x.shape[-1]) * F.normalize(x, dim=-1)
+
+
+
+##########################################################
+# 2026.2.21 User Defined Critic
+##########################################################
+
+class build_critic(nn.Module):
+    def __init__(self, obs_dim, action_dim, archi, output_dim=1):
+        super().__init__()
+
+        num_parallel     = archi.num_parallel
+        embedding_layers = archi.embedding_layers
+        hidden_dim       = archi.hidden_dim
+        hidden_layers    = archi.hidden_layers
+
+        self.num_parallel = num_parallel
+
+        # 构建网络头
+        assert embedding_layers >= 2, "must have at least 2 hidden layer"
+        seq = [linear(obs_dim + action_dim, hidden_dim, num_parallel), layernorm(hidden_dim, num_parallel), nn.Tanh()]
+        for _ in range(embedding_layers - 2):
+            seq += [linear(hidden_dim, hidden_dim, num_parallel), nn.ReLU()]
+        seq += [linear(hidden_dim, hidden_dim, num_parallel), nn.ReLU()]
+        self.embed_sa = nn.Sequential(*seq)
+
+        # 构建网络尾
+        seq = []
+        for _ in range(hidden_layers):
+            seq += [linear(hidden_dim, hidden_dim, num_parallel), nn.ReLU()]
+        seq += [linear(hidden_dim, output_dim, num_parallel)]
+        self.net = nn.Sequential(*seq)
+
+    def forward(self, obs:torch.Tensor, action:torch.Tensor):
+
+        if self.num_parallel > 1:
+            obs = obs.expand(self.num_parallel, -1, -1)
+            action = action.expand(self.num_parallel, -1, -1)
+        sa_embedding = self.embed_sa(torch.cat([obs, action], dim=-1))
+        return self.net(sa_embedding)
