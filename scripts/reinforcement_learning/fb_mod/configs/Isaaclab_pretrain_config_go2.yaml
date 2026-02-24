@@ -55,7 +55,7 @@ agent:
 
     update_z_every_step: 100
 
-    reg_coeff: 0.01
+    reg_coeff: 20.0
 
     train_goal_ratio: 0.2
 

@@ -318,9 +318,8 @@ class FBAgent:
             Qs_critic = self._model._critic(OBS['critic'], action)  # with grad
             _, _, Q_critic = self.get_targets_uncertainty(Qs_critic, self.cfg.train.critic_pessimism_penalty)
             
-            weight = Q_fb.abs().mean().detach()
-            actor_loss -= Q_critic.mean() * self.cfg.train.reg_coeff * weight
-            metrics["actor_loss_critic"] = -(Q_critic.mean() * self.cfg.train.reg_coeff * weight).detach().clone()
+            actor_loss -= Q_critic.mean() * self.cfg.train.reg_coeff
+            metrics["actor_loss_critic"] = -(Q_critic.mean() * self.cfg.train.reg_coeff).detach().clone()
 
         # optimize actor
         self.actor_optimizer.zero_grad(set_to_none=True)
