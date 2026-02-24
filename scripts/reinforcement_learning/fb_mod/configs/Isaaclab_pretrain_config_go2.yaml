@@ -78,7 +78,7 @@ agent:
         hidden_dim: 1024
         hidden_layers: 1
       critic:
-        enable: false
+        enable: true
         hidden_dim: 1024
         hidden_layers: 1
 
