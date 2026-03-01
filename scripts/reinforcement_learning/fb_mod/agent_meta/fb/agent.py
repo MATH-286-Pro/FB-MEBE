@@ -269,6 +269,23 @@ class FBAgent:
         self.forward_optimizer.zero_grad(set_to_none=True)
         self.backward_optimizer.zero_grad(set_to_none=True)
         fb_loss.backward()
+        
+        # 记录梯度绝对值大小（在 clip 之前）
+        with torch.no_grad():
+            forward_grad_norms  = []
+            backward_grad_norms = []
+            for p in self._model._forward_map.parameters():
+                if p.grad is not None:
+                    forward_grad_norms.append(p.grad.abs().mean())
+            for p in self._model._backward_map.parameters():
+                if p.grad is not None:
+                    backward_grad_norms.append(p.grad.abs().mean())
+            
+            forward_grad_abs_mean  = sum(forward_grad_norms) / len(forward_grad_norms) if forward_grad_norms else 0.0
+            backward_grad_abs_mean = sum(backward_grad_norms) / len(backward_grad_norms) if backward_grad_norms else 0.0
+            forward_grad_abs_max   = max(forward_grad_norms) if forward_grad_norms else 0.0
+            backward_grad_abs_max  = max(backward_grad_norms) if backward_grad_norms else 0.0
+        
         if clip_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(self._model._forward_map.parameters(), clip_grad_norm)
             torch.nn.utils.clip_grad_norm_(self._model._backward_map.parameters(), clip_grad_norm)
@@ -290,6 +307,10 @@ class FBAgent:
                 "orth_loss": orth_loss,
                 "orth_loss_diag": orth_loss_diag,
                 "orth_loss_offdiag": orth_loss_offdiag,
+                "forward_grad_abs_mean": forward_grad_abs_mean,
+                "forward_grad_abs_max": forward_grad_abs_max,
+                "backward_grad_abs_mean": backward_grad_abs_mean,
+                "backward_grad_abs_max": backward_grad_abs_max,
             }
         return output_metrics
 
@@ -360,6 +381,16 @@ class FBAgent:
         self.critic_optimizer.zero_grad(set_to_none=True)
         critic_loss.backward()
         
+        # 记录 critic 梯度绝对值大小
+        with torch.no_grad():
+            critic_grad_norms = []
+            for p in self._model._critic.parameters():
+                if p.grad is not None:
+                    critic_grad_norms.append(p.grad.abs().mean())
+            
+            critic_grad_abs_mean = sum(critic_grad_norms) / len(critic_grad_norms) if critic_grad_norms else 0.0
+            critic_grad_abs_max = max(critic_grad_norms) if critic_grad_norms else 0.0
+        
         if clip_grad_norm is not None:
             torch.nn.utils.clip_grad_norm_(self._model._critic.parameters(), clip_grad_norm)
         self.critic_optimizer.step()
@@ -371,6 +402,8 @@ class FBAgent:
                 "unc_Q_reg": Q_unc.mean().detach(),
                 "critic_loss": critic_loss.mean().detach(),
                 "mean_reg_reward": reward_reg.mean().detach(),
+                "critic_grad_abs_mean": critic_grad_abs_mean,
+                "critic_grad_abs_max": critic_grad_abs_max,
             }
         
         return output_metrics
