@@ -22,9 +22,14 @@ env:
   action_scale: 0.0 # obtianed from env
 
   # Video Config
-  video: true
-  video_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
-  video_length:   250
+  video_train: true
+  video_train_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
+  video_train_length:   250
+  
+  video_eval: true
+  video_eval_interval: 250
+  video_eval_length:   250
+  
   video_resolution: [1280, 720]  # Default [1280, 720]
                                  # [320, 240], [480, 360], [640, 480]
                                  # [1280, 720], [1920, 1080]

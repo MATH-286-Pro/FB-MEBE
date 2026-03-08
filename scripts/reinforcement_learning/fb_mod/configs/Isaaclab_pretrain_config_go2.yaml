@@ -24,9 +24,13 @@ env:
   action_scale: 0.0 # obtianed from env
   
   # Video Config
-  video: true
-  video_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
-  video_length:   250
+  video_train: true
+  video_train_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
+  video_train_length:   250
+  
+  video_eval: false
+  video_eval_interval: 250
+  video_eval_length:   250
 
 ##########################################################################################################################
 wandb:

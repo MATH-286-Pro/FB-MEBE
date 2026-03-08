@@ -21,7 +21,7 @@ with hydra.initialize_config_dir(config_dir=os.path.abspath(play_cfg.path), vers
 app_cfg = {
     "headless":       play_cfg.env.headless,
     "device":         hydra_cfg.env.device,
-    "enable_cameras": hydra_cfg.env.video,
+    "enable_cameras": play_cfg.env.video_eval,
 }
 
 ############ Launch Isaaclab APP #############
@@ -104,13 +104,13 @@ class WORKSPACE:
         self.env = gym.make(
             hydra_cfg.env.task,
             cfg = self.env_cfg,
-            render_mode = 'rgb_array' if hydra_cfg.env.video else None,
+            render_mode = 'rgb_array' if play_cfg.env.video_eval else None,
         )
-        if hydra_cfg.env.video:
+        if play_cfg.env.video_eval:
             video_args_eval = {
                 'video_folder': str(self.work_dir / 'videos_eval'),
                 'step_trigger': lambda step: step % 250 == 0,
-                'video_length': hydra_cfg.env.video_length,
+                'video_length': hydra_cfg.env.video_eval_length,
                 'name_prefix': 'eval',
                 'disable_logger': True,
                 'use_wandb': play_cfg.wandb.use_wandb,
@@ -202,7 +202,7 @@ class WORKSPACE:
                 self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
                 self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
         
-        if hydra_cfg.env.video:
+        if play_cfg.env.video_eval:
             self.eval_env.stop_recording(f"{command_xyw}", step=250)
         self.eval_env.train_task()
 

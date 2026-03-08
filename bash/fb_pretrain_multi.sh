@@ -13,7 +13,8 @@ seeds=(0 42 17 5 24)
 for seed in "${seeds[@]}"; do
     python scripts/reinforcement_learning/fb_mod/pretrain.py \
         --config-name=Isaaclab_pretrain_config_go2 \
-        env.video=False \
+        env.video_train=False \
+        env.video_eval=False \
         env.device="cuda:0" \
         train.num_train_steps=300000 \
         env.num_envs=2048 \

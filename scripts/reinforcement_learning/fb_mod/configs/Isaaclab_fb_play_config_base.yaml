@@ -6,6 +6,7 @@ hydra:
     chdir: false  # Don't change working directory
 
 env:
+  video_eval: true
   headless: true
   num_envs: 512
   seed: 0

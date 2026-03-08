@@ -27,7 +27,7 @@ with hydra.initialize_config_dir(config_dir=os.path.abspath(config_dir), version
 app_cfg = {
     "headless": hydra_cfg.env.headless,
     "device":   hydra_cfg.env.device,
-    "enable_cameras": hydra_cfg.env.video,
+    "enable_cameras": hydra_cfg.env.video_train or hydra_cfg.env.video_eval,
 }
 
 ############ Launch Isaaclab APP #############
@@ -142,33 +142,37 @@ class WORKSPACE:
         self.env = gym.make(
             hydra_cfg.env.task,
             cfg = self.env_cfg,
-            render_mode = 'rgb_array' if hydra_cfg.env.video else None,
+            render_mode = 'rgb_array' if (hydra_cfg.env.video_train or hydra_cfg.env.video_eval) else None,
         )
-        if hydra_cfg.env.video:
+        
+        # Setup train environment with video recording if enabled
+        if hydra_cfg.env.video_train:
             video_args_pretrain = {
                 'video_folder': str(self.work_dir / 'videos_pretrain'),
-                'step_trigger': lambda step: step % hydra_cfg.env.video_interval == 0,
-                'video_length': hydra_cfg.env.video_length,
+                'step_trigger': lambda step: step % hydra_cfg.env.video_train_interval == 0,
+                'video_length': hydra_cfg.env.video_train_length,
                 'name_prefix': 'pretrain',
                 'disable_logger': True,
                 'use_wandb': hydra_cfg.wandb.use_wandb,
             }
+            self.train_env = RecordVideo_TRAIN_GC(self.env, **video_args_pretrain)
+            self.train_env = FB_VecEnvWrapper(self.train_env) # type: ignore
+        else:
+            self.train_env = FB_VecEnvWrapper(self.env)  # type: ignore
+        
+        # Setup eval environment with video recording if enabled
+        if hydra_cfg.env.video_eval:
             video_args_eval = {
                 'video_folder': str(self.work_dir / 'videos_eval'),
-                'step_trigger': lambda step: step % 250 == 0,
-                'video_length': hydra_cfg.env.video_length,
+                'step_trigger': lambda step: step % hydra_cfg.env.video_eval_interval == 0,
+                'video_length': hydra_cfg.env.video_eval_length,
                 'name_prefix': 'eval',
                 'disable_logger': True,
                 'use_wandb': hydra_cfg.wandb.use_wandb,
             }
-            self.train_env = RecordVideo_TRAIN_GC(self.env, **video_args_pretrain)
             self.eval_env  = RecordVideo_EVAL_GC(self.env, **video_args_eval)
-
-            self.train_env = FB_VecEnvWrapper(self.train_env) # type: ignore
             self.eval_env  = FB_VecEnvWrapper(self.eval_env)  # type: ignore
-        
         else:
-            self.train_env = FB_VecEnvWrapper(self.env)  # type: ignore
             self.eval_env  = FB_VecEnvWrapper(self.env)  # type: ignore
 
         # 2.create agent
@@ -317,7 +321,7 @@ class WORKSPACE:
                 self.eval_metrics.clear()
 
                 # run 300 frames to prevent massive robots reset
-                if hydra_cfg.env.video:
+                if hydra_cfg.env.video_train:
                     step_id = self.train_env.env.step_id
                     
                 for _ in range(300):
@@ -327,7 +331,7 @@ class WORKSPACE:
                     action = self.agent.act(obs['policy'], z, mean=False)
                     td, _, _, _, _ = self.train_env.step(action)
 
-                if hydra_cfg.env.video:
+                if hydra_cfg.env.video_train:
                     self.train_env.env.step_id = step_id
 
                 ##############################################
@@ -405,7 +409,7 @@ class WORKSPACE:
                 self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
                 self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
         
-        if hydra_cfg.env.video:
+        if hydra_cfg.env.video_eval:
             self.eval_env.stop_recording(f"{command_xyw}", step=self.train_env.env.step_id)
         self.eval_env.train_task()
 
