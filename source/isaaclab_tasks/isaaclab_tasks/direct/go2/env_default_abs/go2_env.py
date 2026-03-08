@@ -172,10 +172,27 @@ class Go2NormEnv(DirectRLEnv):
         self._feet_height_z      = self._robot.data.body_pos_w[:, self._feet_ids, 2]
         self._feet_xy_vel_norm   = torch.norm(self._robot.data.body_lin_vel_w[:, self._feet_ids, :2], dim=-1)
 
-
-        # 带噪声的观测
+        # get observation
         add_noise = self.cfg.add_noise
-        obs_noise = torch.cat(
+        obs_noise    = self.user_return_policy_obs(add_noise)  # 带噪声的观测
+        obs_raw      = self.user_return_critic_obs()           # 不带噪声的观测
+        obs_raw_dict = self.user_return_dict()                 # 用于奖励函数计算，方便对齐
+        
+        observations = {"policy": obs_noise[:, :self.cfg.policy_space],        # (for actor)
+                        "obs"   : obs_raw[:, :self.cfg.observation_space],     # (for F)
+                        "goal"  : obs_raw[:, :self.cfg.goal_space],            # (for B)
+                        "critic": obs_raw[:, :self.cfg.critic_space],          # (for critic)
+                        "raw":    obs_raw_dict                                 # (for inference)
+                        }
+        
+        # update previous action
+        self._previous_actions = self._actions.detach().clone()
+
+        return observations
+    
+
+    def user_return_policy_obs(self, add_noise)-> torch.Tensor:
+        return torch.cat(
             [
                 self._robot.data.root_lin_vel_b      + (add_noise * torch.rand_like(self._robot.data.root_lin_vel_b) * 0.2 - 0.1),
                 self._robot.data.root_ang_vel_b      + (add_noise * torch.rand_like(self._robot.data.root_ang_vel_b) * 0.4 - 0.2),
@@ -188,8 +205,8 @@ class Go2NormEnv(DirectRLEnv):
             dim=-1,
         )
 
-        # 不带噪声的观测
-        obs_raw = torch.cat(
+    def user_return_critic_obs(self)-> torch.Tensor:
+        return torch.cat(
             [
                 self._robot.data.root_lin_vel_b,
                 self._robot.data.root_ang_vel_b,
@@ -205,8 +222,8 @@ class Go2NormEnv(DirectRLEnv):
             dim=-1,
         )
 
-        # 用于 inference 奖励函数计算
-        obs_raw_dict = {
+    def user_return_dict(self) -> dict:
+        return {
             "lin_vel":                self._robot.data.root_lin_vel_b,
             "ang_vel":                self._robot.data.root_ang_vel_b,
             "gravity":                self._robot.data.projected_gravity_b,
@@ -229,39 +246,23 @@ class Go2NormEnv(DirectRLEnv):
             "feet_first_contact":     self._contact_sensor.compute_first_contact(self.step_dt)[:, self._feet_contact_ids],
         }
 
-        observations = {"policy": obs_noise[:, :self.cfg.policy_space],        # (for actor)
-                        "obs"   : obs_raw[:, :self.cfg.observation_space],     # (for F)
-                        "goal"  : obs_raw[:, :self.cfg.goal_space],            # (for B)
-                        "critic": obs_raw[:, :self.cfg.critic_space],          # (for critic)
-                        "raw":    obs_raw_dict                                 # (for inference)
-                        }
-        
-        self._previous_actions = self._actions.detach().clone()
 
-        return observations
-    
 
+    ####################################################################################################################
     def _get_rewards(self) -> tuple[torch.Tensor, dict]:
 
-        task_rewards, regularization_rewards = self._get_locomotion_rewards()
-        # self.reg_rew = torch.prod(torch.stack(list(regularization_rewards.values())), dim=0) #0000ff
-        self.reg_rew = torch.sum(torch.stack(list(regularization_rewards.values())), dim=0) #0000ff 改为累加
-        regularization_metrics = self.get_env_metrics()  #0000ff
+        task_reward_dict = self.user_return_task_reward()
+        reg_reward_dict  = self.user_return_reguarization_reward()
 
-        # all_rewards = task_rewards | regularization_metrics
+        self.reg_rew = torch.sum(torch.stack(list(reg_reward_dict.values())), dim=0)
+        regularization_metrics = self.get_env_metrics()
 
-        if self.task_reward == 'locomotion':
-            reward = 1.0 * torch.prod(torch.stack(list(task_rewards.values())), dim=0)
+        reward = 1.0 * torch.prod(torch.stack(list(task_reward_dict.values())), dim=0)
 
-        elif self.task_reward == 'reg_locomotion':
-            reward = torch.prod(torch.stack(list(regularization_rewards.values())), dim=0)
-
-        else:
-            raise ValueError(f"Unknown reward type: {self.task_reward}")
 
         # Logging
         metrics_dict = dict()
-        for key, value in task_rewards.items():
+        for key, value in task_reward_dict.items():
             self._episode_sums[key] += value
             metrics_dict[key] = value.mean().item()
         
@@ -270,7 +271,7 @@ class Go2NormEnv(DirectRLEnv):
 
         return reward, metrics_dict
 
-    def _get_locomotion_rewards(self) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
+    def user_return_task_reward(self) -> Dict[str, torch.Tensor]:
         # linear velocity tracking
         # task
         lin_vel_xy_error = torch.norm(self._commands[:, :2] - self._robot.data.root_lin_vel_b[:, :2], dim=1)
@@ -288,11 +289,17 @@ class Go2NormEnv(DirectRLEnv):
         ang_xy_error = torch.norm(self._robot.data.projected_gravity_b - target_gravity_b, dim=1)
         ang_xy_rew = torch.exp(-torch.square(ang_xy_error / 0.1))
 
-        # lin_vel_z_error = torch.abs(self._robot.data.root_lin_vel_b[:, 2])
-        # lin_vel_z_rew = torch.exp(-torch.square(lin_vel_z_error / 0.2))
+        task_rewards = {
+            "lin_vel_xy_rew": lin_vel_xy_rew,
+            "ang_vel_z_rew": ang_vel_z_rew,
+            # "lin_z_rew": lin_z_rew,
+            "ang_xy_rew": ang_xy_rew,
+        }
 
-        # ang_vel_xy_error = torch.norm(self._robot.data.root_ang_vel_b[:, :2], dim=1)
-        # ang_vel_xy_rew = torch.exp(-torch.square(ang_vel_xy_error / 2.0))
+        return task_rewards
+
+
+    def user_return_reguarization_reward(self) -> Dict[str, torch.Tensor]:
 
         # Regularization
         self.action_rate = torch.norm(self._actions - self._previous_actions, dim=1)
@@ -319,13 +326,6 @@ class Go2NormEnv(DirectRLEnv):
 
         self.penalty_undesired_contact = self.undesired_contacts(threshold=1.0)
 
-        task_rewards = {
-            "lin_vel_xy_rew": lin_vel_xy_rew,
-            "ang_vel_z_rew": ang_vel_z_rew,
-            # "lin_z_rew": lin_z_rew,
-            "ang_xy_rew": ang_xy_rew,
-        }
-
         regularization_rewards = {
             'joint_acc':         -2.5e-7 * self.penalty_joint_acc,
             'action_rate':       -0.1 *    self.penalty_action_rate,
@@ -340,7 +340,7 @@ class Go2NormEnv(DirectRLEnv):
             # 'undesired_contact': -1.0 * self.penalty_undesired_contact,
         }
 
-        return task_rewards, regularization_rewards
+        return regularization_rewards
 
 
     #0000ff
@@ -476,7 +476,6 @@ class Go2NormEnv(DirectRLEnv):
             self._commands[env_ids, 0] = torch.rand(len(env_ids), device=self.device) * (self._commands_range["vx"][1] - self._commands_range["vx"][0]) + self._commands_range["vx"][0]
             self._commands[env_ids, 1] = torch.rand(len(env_ids), device=self.device) * (self._commands_range["vy"][1] - self._commands_range["vy"][0]) + self._commands_range["vy"][0]
             self._commands[env_ids, 2] = torch.rand(len(env_ids), device=self.device) * (self._commands_range["wz"][1] - self._commands_range["wz"][0]) + self._commands_range["wz"][0]
-
 
 
     def _set_debug_vis_impl(self, debug_vis: bool):
