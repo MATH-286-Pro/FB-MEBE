@@ -18,6 +18,7 @@ env:
   # Task config
   task: Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-v0
   # task: Isaac-Flat-Unitree-Go2-Rnd-Full-FB-INC-v0
+  # task: Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-KAIST-v0
   num_envs: 2048
   seed: 0
 

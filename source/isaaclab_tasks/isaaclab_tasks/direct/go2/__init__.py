@@ -32,6 +32,16 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-KAIST-v0",
+    entry_point=f"{__name__}.env_KAIST_abs.go2_env_KAIST:Go2_KAIST_Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_KAIST_abs.go2_cfg_KAIST:Go2FlatEnvNormKAISTCfg",          # Env Config
+        # "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:Go2FlatPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Isaac-Flat-Unitree-Go2-FB-v0",
     entry_point=f"{__name__}.go2_env:Go2NormEnv",
     disable_env_checker=True,
