@@ -216,9 +216,15 @@ class WORKSPACE:
         td, _ = self.train_env.reset()
         z = None
 
+        # Initialize timing variables
+        self.sim_time    = 0.0
+        self.store_time  = 0.0
+        self.update_time = 0.0
+
         for t in range(0, self.train_cfg.num_train_steps+1):
 
             # Environment interaction
+            sim_start = time.time()
             with torch.no_grad():
                 obs = td['obs']
                 step_count = td['time'].detach().clone()
@@ -235,10 +241,12 @@ class WORKSPACE:
                     action = self.agent.act(obs['policy'], z, mean=False)
                 
             new_td, _, terminated, _, new_info = self.train_env.step(action)
+            self.sim_time += time.time() - sim_start
             
             # Add transition date
             # ensure (s,a,s') time sequence
             # If s' is reseted, then td['time'] > new_td['time'] = 0, and it's not valid data
+            store_start = time.time()
             indices = ((td['time'] + 1 == new_td['time']) & (td['time'] != 1)).squeeze()
             
             def index_dict_recursively(data_dict, indices):
@@ -266,16 +274,18 @@ class WORKSPACE:
 
             # Update td
             td = new_td
+            self.store_time += time.time() - store_start
 
             # Update agent
             if t % self.train_cfg.interval_update == 0 and t >= self.train_cfg.num_seeding_steps:
-                start_time = time.time()
+                update_start = time.time()
                 for _ in range(self.train_cfg.num_updates):
                     metrics_pretrain = self.agent.update(self.replay_buffer, t)
                     metrics_reg      = self.train_env.unwrapped.get_env_metrics() # type: ignore
                     self.train_metrics.update(metrics_pretrain, key_prefix="pretrain/")
                     self.train_metrics.update(metrics_reg, key_prefix="regularization/")
-                print(f"Update time: {time.time() - start_time:.2f} seconds", end='\r')
+                print(f"Update time: {time.time() - update_start:.2f} seconds", end='\r')
+                self.update_time += time.time() - update_start
             
                 # Upload metrics
                 if t % self.train_cfg.interval_log == 0:
@@ -360,7 +370,11 @@ class WORKSPACE:
                 
 
             if t % self.train_cfg.interval_log == 0:
-                print(f"| S:{t} | T:{self.time} |")
+                total_time = self.sim_time + self.store_time + self.update_time
+                sim_percent    = (self.sim_time / total_time) * 100
+                store_percent  = (self.store_time / total_time) * 100
+                update_percent = (self.update_time / total_time) * 100
+                print(f"| S:{t} | T:{self.time} | Sim:{sim_percent:.1f}% | Store:{store_percent:.1f}% | Update:{update_percent:.1f}% |")
 
             # Save FB model
             if t > 0 and t % self.train_cfg.interval_save_model == 0:
