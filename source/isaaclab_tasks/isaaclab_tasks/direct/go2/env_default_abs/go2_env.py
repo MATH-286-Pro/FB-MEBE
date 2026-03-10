@@ -224,11 +224,19 @@ class Go2NormEnv(DirectRLEnv):
 
     def user_return_dict(self) -> dict:
         return {
-            "lin_vel":                self._robot.data.root_lin_vel_b,
-            "ang_vel":                self._robot.data.root_ang_vel_b,
-            "gravity":                self._robot.data.projected_gravity_b,
+            "vx":                     self._robot.data.root_lin_vel_b[:, 0].unsqueeze(-1),
+            "vy":                     self._robot.data.root_lin_vel_b[:, 1].unsqueeze(-1),
+            "vz":                     self._robot.data.root_lin_vel_b[:, 2].unsqueeze(-1),
 
-            "base_height":            self._robot.data.root_pos_w[:, 2:],
+            "wx":                     self._robot.data.root_ang_vel_b[:, 0].unsqueeze(-1),
+            "wy":                     self._robot.data.root_ang_vel_b[:, 1].unsqueeze(-1),
+            "wz":                     self._robot.data.root_ang_vel_b[:, 2].unsqueeze(-1),
+
+            "gx":                     self._robot.data.projected_gravity_b[:, 0].unsqueeze(-1),
+            "gy":                     self._robot.data.projected_gravity_b[:, 1].unsqueeze(-1),
+            "gz":                     self._robot.data.projected_gravity_b[:, 2].unsqueeze(-1),
+
+            "base_height":            self._robot.data.root_pos_w[:, 2].unsqueeze(-1),
 
             "joint_pos":              self._robot.data.joint_pos - self._robot.data.default_joint_pos,
             "joint_vel":              self._robot.data.joint_vel,

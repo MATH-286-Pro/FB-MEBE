@@ -114,11 +114,18 @@ class WORKSPACE:
         self.train_cfg = train_cfg
         self.device    = hydra_cfg.env.device
 
+        num_envs = self.env_cfg.scene.num_envs
         self._default_command = {
-            "lin_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
-            "ang_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
-            "gravity": torch.tensor([0.0, 0.0, -1.0], device=self.device),
-            "height": 0.28,
+            "vx": torch.zeros(num_envs, 1, device=self.device),
+            "vy": torch.zeros(num_envs, 1, device=self.device),
+            "vz": torch.zeros(num_envs, 1, device=self.device),
+            "wx": torch.zeros(num_envs, 1, device=self.device),
+            "wy": torch.zeros(num_envs, 1, device=self.device),
+            "wz": torch.zeros(num_envs, 1, device=self.device),
+            "gx": torch.zeros(num_envs, 1, device=self.device),
+            "gy": torch.zeros(num_envs, 1, device=self.device),
+            "gz": torch.ones(num_envs, 1, device=self.device) * (-1.0),
+            "base_height": torch.full((num_envs, 1), 0.28, device=self.device),
         }
 
         # build save_path
@@ -302,18 +309,18 @@ class WORKSPACE:
             if self.train_cfg.eval and t % self.train_cfg.interval_eval == 0 and t >= self.train_cfg.num_seeding_steps and self.replay_buffer["train"].size >= self.train_cfg.num_eval_sample:
                 self.env.unwrapped.set_debug_vis(True)  # type: ignore     
                 self.eval([0.0, 0.0, 0.0])
-                self.eval([+0.5, 0.0, 0.0])
-                self.eval([+1.0, 0.0, 0.0])
-                self.eval([-0.5, 0.0, 0.0])
-                self.eval([-1.0, 0.0, 0.0])
-                self.eval([+0.5, +0.5, 0.0])
-                self.eval([+0.5, -0.5, 0.0])
-                self.eval([-0.5, +0.5, 0.0])
-                self.eval([-0.5, -0.5, 0.0])
-                self.eval([0.0, +0.5, 0.0])
-                self.eval([0.0, -0.5, 0.0])
-                self.eval([0.0, 0.0, +1.0])
-                self.eval([0.0, 0.0, -1.0])
+                # self.eval([+0.5, 0.0, 0.0])
+                # self.eval([+1.0, 0.0, 0.0])
+                # self.eval([-0.5, 0.0, 0.0])
+                # self.eval([-1.0, 0.0, 0.0])
+                # self.eval([+0.5, +0.5, 0.0])
+                # self.eval([+0.5, -0.5, 0.0])
+                # self.eval([-0.5, +0.5, 0.0])
+                # self.eval([-0.5, -0.5, 0.0])
+                # self.eval([0.0, +0.5, 0.0])
+                # self.eval([0.0, -0.5, 0.0])
+                # self.eval([0.0, 0.0, +1.0])
+                # self.eval([0.0, 0.0, -1.0])
                 self.env.unwrapped.set_debug_vis(False)  # type: ignore
 
                 if hydra_cfg.wandb.use_wandb:
@@ -390,8 +397,9 @@ class WORKSPACE:
             goal = data['observation']['goal'].detach().clone()  # no noise
 
             command = copy.deepcopy(self._default_command)
-            command['lin_vel'][:2] = torch.tensor(command_xyw[0:2], device=self.device)
-            command['ang_vel'][2]  = torch.tensor(command_xyw[2],   device=self.device)
+            command['vx'][:] = command_xyw[0]
+            command['vy'][:] = command_xyw[1]
+            command['wz'][:] = command_xyw[2]
 
             reward = reward_fn(obs, command)
 

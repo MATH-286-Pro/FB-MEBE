@@ -95,6 +95,9 @@ def set_seed_everywhere(seed: int):
     np.random.seed(seed)
     random.seed(seed)
 
+def dict_to_device(d: dict, device: torch.device) -> dict:
+    return {k: v.to(device) for k, v in d.items()}
+
 ########################################################################################################################
 
 class WORKSPACE:
@@ -110,10 +113,16 @@ class WORKSPACE:
         self.agent_device = "cuda" if torch.cuda.is_available() else self.device
 
         self._default_command = {
-            "lin_vel": torch.tensor([0.0, 0.0, 0.0], device=self.agent_device),
-            "ang_vel": torch.tensor([0.0, 0.0, 0.0], device=self.agent_device),
-            "gravity": torch.tensor([0.0, 0.0, -1.0], device=self.agent_device),
-            "height": 0.28,
+            "vx": torch.tensor(0.0,  device=self.agent_device),
+            "vy": torch.tensor(0.0,  device=self.agent_device),
+            "vz": torch.tensor(0.0,  device=self.agent_device),
+            "wx": torch.tensor(0.0,  device=self.agent_device),
+            "wy": torch.tensor(0.0,  device=self.agent_device),
+            "wz": torch.tensor(0.0,  device=self.agent_device),
+            "gx": torch.tensor(0.0,  device=self.agent_device),
+            "gy": torch.tensor(0.0,  device=self.agent_device),
+            "gz": torch.tensor(-1.0, device=self.agent_device),
+            "base_height": torch.tensor(0.28, device=self.agent_device),
         }
 
         # 实例化 class
@@ -193,7 +202,7 @@ class WORKSPACE:
         # 从 replay buffer 中采样用于 reward inference
         with torch.no_grad():
             data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
-            obs  = data['raw']
+            raw  = dict_to_device(data['raw'], self.agent_device)
             goal = data['goal'].detach().clone()
 
             Z_Bs = self.agent.backward_map(goal)
@@ -230,20 +239,22 @@ class WORKSPACE:
 
             # 将手柄命令转换为机器人命令
             command = copy.deepcopy(self._default_command)
-            command['lin_vel'][0] = torch.tensor(+1.0 * values['LY'], device=self.device)  # forward/backward
-            command['lin_vel'][1] = torch.tensor(-1.0 * values['LX'], device=self.device)  # left/right
-            command['ang_vel'][2] = torch.tensor(-2.0 * values['RX'], device=self.device)  # rotation
-            command['gravity'][0] = torch.tensor(gx, device=self.device)
-            command['gravity'][1] = torch.tensor(gy, device=self.device)
-            command['gravity'][2] = torch.tensor(gz, device=self.device)
-            command['height'] = float(command['height']) + values['RT'] * 0.1 - values['LT'] * 0.1  # adjust height with triggers
+            command['vx'] = torch.tensor(+1.0 * values['LY'], device=self.agent_device)  # forward/backward
+            command['vz'] = torch.tensor(+1.0 * values['RY'], device=self.agent_device)  # forward/backward
+            command['vy'] = torch.tensor(-1.0 * values['LX'], device=self.agent_device)  # left/right
+            command['wz'] = torch.tensor(-2.0 * values['RX'], device=self.agent_device)  # rotation
+            command['gx'] = torch.tensor(gx, device=self.agent_device)
+            command['gy'] = torch.tensor(gy, device=self.agent_device)
+            command['gz'] = torch.tensor(gz, device=self.agent_device)
+            command['base_height'] = command['base_height'] + torch.tensor(values['RT'] * 0.1 - values['LT'] * 0.1, device=self.agent_device)
             
             # 更新 eval_env 任务目标
-            self.eval_env.eval_task([values['LY'], -values['LX'], -2.0 * values['RX']])
+            self.eval_env.eval_task(torch.stack([torch.tensor(values['LY']), torch.tensor(-values['LX']), torch.tensor(-2.0 * values['RX'])]))
 
             # 基于当前命令计算 reward 并推理 z
-            reward = reward_fn(obs, command) # type: ignore
-            z_r = self.agent.reward_inference(Z_Bs, reward)
+            reward = reward_fn(raw, command) # type: ignore
+            reward = torch.tensor(reward, device=self.agent_device, dtype=torch.float32)
+            z_r = self.agent.reward_inference(Z_Bs, reward.T)
             z_r = z_r.expand(self.eval_env.num_envs, -1)
             
             # 使用策略生成动作（将观测转移到 agent_device，动作转回 env device）
