@@ -46,8 +46,8 @@ from wrapper.wrapper_video import RecordVideo_TRAIN_GC, RecordVideo_EVAL_GC
 from buffer import DictBuffer
 from toolbox.dataclass_metrics import TRAIN_METRICS_CLASS, EVAL_METRICS_CLASS
 from toolbox.dataclass_pylance import AGENT_CFG
-from toolbox.functions_reward import reward_fn
 from toolbox.functions_entropy import compute_entropy
+from toolbox.functions_reward import CMDSampler, RewardFunction
 
 from agent_crl.agent import FB_CRL_AGENT
 from agent_meta.fb.agent import FBAgent as FB_META_Agent
@@ -114,19 +114,6 @@ class WORKSPACE:
         self.train_cfg = train_cfg
         self.device    = hydra_cfg.env.device
 
-        num_envs = self.env_cfg.scene.num_envs
-        self._default_command = {
-            "vx": torch.zeros(num_envs, 1, device=self.device),
-            "vy": torch.zeros(num_envs, 1, device=self.device),
-            "vz": torch.zeros(num_envs, 1, device=self.device),
-            "wx": torch.zeros(num_envs, 1, device=self.device),
-            "wy": torch.zeros(num_envs, 1, device=self.device),
-            "wz": torch.zeros(num_envs, 1, device=self.device),
-            "gx": torch.zeros(num_envs, 1, device=self.device),
-            "gy": torch.zeros(num_envs, 1, device=self.device),
-            "gz": torch.ones(num_envs, 1, device=self.device) * (-1.0),
-            "base_height": torch.full((num_envs, 1), 0.28, device=self.device),
-        }
 
         # build save_path
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -199,6 +186,11 @@ class WORKSPACE:
         self.train_metrics = TRAIN_METRICS_CLASS()
         self.eval_metrics  = EVAL_METRICS_CLASS()
 
+        # 创建 cmd sampler
+        self.CMD = CMDSampler(device=self.device)
+
+        # 创建 reward function
+        self.reward_fn = RewardFunction()
 
     def close(self):
         self.train_env.close()
@@ -304,42 +296,40 @@ class WORKSPACE:
                             wandb.log({f"normalizer/policy/mean_{idx}": means[i].item()}, step=t)
                             wandb.log({f"normalizer/policy/std_{idx}":  stds[i].item()},  step=t)
 
+            # 评估逻辑
+            # 采样 cmd
+            # 根据 cmd +  reward_fn 推理不同任务下的奖励
+            # 计算 Z_Rs
+            # 环境交互
+            #    使用 reward_fn + cmd 计算 episode return
+            #    注意 reg reward 计算
+
+
 
             # Evaluate agent
             if self.train_cfg.eval and t % self.train_cfg.interval_eval == 0 and t >= self.train_cfg.num_seeding_steps and self.replay_buffer["train"].size >= self.train_cfg.num_eval_sample:
                 self.env.unwrapped.set_debug_vis(True)  # type: ignore     
-                self.eval([0.0, 0.0, 0.0])
-                # self.eval([+0.5, 0.0, 0.0])
-                # self.eval([+1.0, 0.0, 0.0])
-                # self.eval([-0.5, 0.0, 0.0])
-                # self.eval([-1.0, 0.0, 0.0])
-                # self.eval([+0.5, +0.5, 0.0])
-                # self.eval([+0.5, -0.5, 0.0])
-                # self.eval([-0.5, +0.5, 0.0])
-                # self.eval([-0.5, -0.5, 0.0])
-                # self.eval([0.0, +0.5, 0.0])
-                # self.eval([0.0, -0.5, 0.0])
-                # self.eval([0.0, 0.0, +1.0])
-                # self.eval([0.0, 0.0, -1.0])
+                self.eval('locomotion', 'list')
+                self.eval('locomotion', 'random')
                 self.env.unwrapped.set_debug_vis(False)  # type: ignore
+                
+                # if hydra_cfg.wandb.use_wandb:
+                #     wandb.log(self.eval_metrics.get_tasks_metrics(), step = t)
+                # self.eval_metrics.clear()
 
-                if hydra_cfg.wandb.use_wandb:
-                    wandb.log(self.eval_metrics.get_tasks_metrics(), step = t)
-                self.eval_metrics.clear()
-
-                # run 300 frames to prevent massive robots reset
-                if hydra_cfg.env.video_train:
-                    step_id = self.train_env.env.step_id
+                # # run 300 frames to prevent massive robots reset
+                # if hydra_cfg.env.video_train:
+                #     step_id = self.train_env.env.step_id
                     
-                for _ in range(300):
-                    obs = td['obs']
-                    step_count = td['time'].detach().clone()
-                    z = self.agent.refresh_z(z, step_count)
-                    action = self.agent.act(obs['policy'], z, mean=False)
-                    td, _, _, _, _ = self.train_env.step(action)
+                # for _ in range(300):
+                #     obs = td['obs']
+                #     step_count = td['time'].detach().clone()
+                #     z = self.agent.refresh_z(z, step_count)
+                #     action = self.agent.act(obs['policy'], z, mean=False)
+                #     td, _, _, _, _ = self.train_env.step(action)
 
-                if hydra_cfg.env.video_train:
-                    self.train_env.env.step_id = step_id
+                # if hydra_cfg.env.video_train:
+                #     self.train_env.env.step_id = step_id
 
                 ##############################################
                 #####        FB Data Quality Check       #####
@@ -385,40 +375,36 @@ class WORKSPACE:
                 self.agent.save(model_dir / f'model_step_{t}.pt')
 
     @torch.inference_mode()
-    def eval(self, command_xyw):
+    def eval(self, task: str, mode: str):
 
-        self.eval_env.eval_task(command_xyw)
+        # Command
+        num_envs  = self.env_cfg.scene.num_envs
+        cmd: dict = self.CMD.sample(num_envs, task, mode)
+        self.eval_env.eval_task(torch.cat([cmd['vx'], cmd['vy'], cmd['wz']], dim=-1))
 
-        with torch.no_grad():
+        # Inference Phase
+        data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
+        obs  = data['observation']['raw']
+        goal = data['observation']['goal'].detach().clone()  # no noise
 
-            # inference phase
-            data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
-            obs  = data['observation']['raw']
-            goal = data['observation']['goal'].detach().clone()  # no noise
+        reward = self.reward_fn.inference(obs, cmd, task)
 
-            command = copy.deepcopy(self._default_command)
-            command['vx'][:] = command_xyw[0]
-            command['vy'][:] = command_xyw[1]
-            command['wz'][:] = command_xyw[2]
+        z_r = self.agent.reward_inference(goal, reward.T)
+        z_r = z_r.expand(self.eval_env.num_envs, -1)  # type: ignore
 
-            reward = reward_fn(obs, command)
+        # Start Simulation
+        td, _ = self.eval_env.reset()
 
-            z_r = self.agent.reward_inference(goal, reward)
-            z_r = z_r.expand(self.eval_env.num_envs, -1)  # type: ignore
-
-            # start simulation
-            td, _ = self.eval_env.reset()
-
-            for _ in range(250):
-                obs = td['obs']
-                action = self.agent.act(obs['policy'], z_r, mean=True)
-                td, _, _, _, info = self.eval_env.step(action)
-                
-                self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
-                self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
+        for _ in range(250):
+            obs = td['obs']
+            action = self.agent.act(obs['policy'], z_r, mean=True)
+            td, _, _, _, info = self.eval_env.step(action)
+            
+            # self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
+            # self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
         
         if hydra_cfg.env.video_eval:
-            self.eval_env.stop_recording(f"{command_xyw}", step=self.train_env.env.step_id)
+            self.eval_env.stop_recording(f"{task}_{mode}", step=self.train_env.env.step_id)
         self.eval_env.train_task()
 
 ########################################################################################################################

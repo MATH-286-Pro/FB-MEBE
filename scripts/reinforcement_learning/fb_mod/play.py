@@ -41,7 +41,7 @@ from wrapper.wrapper_video import RecordVideo_TRAIN_GC, RecordVideo_EVAL_GC
 from buffer import DictBuffer # faster buffer implementation
 from toolbox.dataclass_pylance import AGENT_CFG
 from toolbox.dataclass_metrics import TRAIN_METRICS_CLASS, EVAL_METRICS_CLASS
-from toolbox.functions_reward import reward_fn
+from toolbox.functions_reward import CMDSampler, RewardFunction
 
 from agent_crl.agent import FB_CRL_AGENT
 from agent_meta.fb.agent import FBAgent as FB_META_Agent
@@ -78,13 +78,6 @@ class WORKSPACE:
         self.agent_cfg = agent_cfg
         self.train_cfg = train_cfg
         self.device    = hydra_cfg.env.device
-
-        self._default_command = {
-            "lin_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
-            "ang_vel": torch.tensor([0.0, 0.0, 0.0], device=self.device),
-            "gravity": torch.tensor([0.0, 0.0, -1.0], device=self.device),
-            "height": 0.28,
-        }
 
         # 创建保存路径
         self.timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -133,8 +126,13 @@ class WORKSPACE:
         del data
 
         # 4.创建各种记录器
-        self.train_metrics = TRAIN_METRICS_CLASS()
         self.eval_metrics  = EVAL_METRICS_CLASS()
+
+        # 5.Creat Task Command Sampler
+        self.CMD = CMDSampler(device=self.device)
+
+        # 6.Creat Reward Function
+        self.reward_fn = RewardFunction()
 
 
     def close(self):
@@ -157,56 +155,54 @@ class WORKSPACE:
     def eval(self):
         self.env.unwrapped.set_debug_vis(True)  # type: ignore
         print(f"T:{self.time} Start Evaluation")
-        self.eval_task([0.0, 0.0, 0.0])           
-        self.eval_task([+0.5, 0.0, 0.0])
-        self.eval_task([+1.0, 0.0, 0.0])
-        self.eval_task([-1.0, 0.0, 0.0])
-        self.eval_task([0.0, +0.5, 0.0])
-        self.eval_task([0.0, 0.0, +1.0])
-        print("Mean Rewards: ", self.eval_metrics.get_tasks_episode_reward())
+        self.eval_task('locomotion', 'list')           
+        # print("Mean Rewards: ", self.eval_metrics.get_tasks_episode_reward())
 
         if play_cfg.wandb.use_wandb:
             wandb.log(self.eval_metrics.get_tasks_metrics(), step = 0)
         self.eval_metrics.clear()
 
 
-    def eval_task(self, command_xyw):
+    @torch.inference_mode()
+    def eval_task(self, task: str, mode: str):
 
-        self.eval_env.eval_task(command_xyw)
+        num_envs  = self.env_cfg.scene.num_envs
+        cmd: dict = self.CMD.sample(num_envs, task, mode)
+        self.eval_env.eval_task(torch.cat([cmd['vx'], cmd['vy'], cmd['wz']], dim=-1))
 
-        with torch.no_grad():
+        # 推理阶段
+        data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
+        obs  = data['raw']
+        goal = data['goal'].detach().clone()  # no noise
+        Z_Bs = self.agent.backward_map(goal)
 
-            # 推理阶段
-            data = self.replay_buffer['train'].sample(self.train_cfg.num_eval_sample)
-            obs  = data['raw']
-            goal = data['goal'].detach().clone()  # no noise
-            Z_Bs = self.agent.backward_map(goal)
+        reward = self.reward_fn.inference(obs, cmd, task)
 
-            command = copy.deepcopy(self._default_command)
-            command['lin_vel'][:2] = torch.tensor(command_xyw[0:2], device=self.device)
-            command['ang_vel'][2]  = torch.tensor(command_xyw[2],   device=self.device)
+        z_r = self.agent.reward_inference(Z_Bs, reward.T)
+        z_r = z_r.expand(self.eval_env.num_envs, -1)  # type: ignore
 
-            reward = reward_fn(obs, command)
+        # 开始测试
+        td, _ = self.eval_env.reset()
 
-            z_r = self.agent.reward_inference(Z_Bs, reward)
-            z_r = z_r.expand(self.eval_env.num_envs, -1)  # type: ignore
+        for _ in range(250):
+            obs = td['obs']
+            action = self.agent.act(obs['policy'][:, :self.agent_cfg.model.policy_dim], z_r, mean=True)
+            td, _, _, _, info = self.eval_env.step(action)
+            
+            self.eval_metrics.update(
+                task,
+                mode,
+                cmd['log_index'],
+                td['reward_task'],
+                info['rew_dict'],
+                info['reg_dict']
+            )
 
-            # 开始测试
-            td, _ = self.eval_env.reset()
-
-            for _ in range(250):
-                obs = td['obs']
-                action = self.agent.act(obs['policy'][:, :self.agent_cfg.model.policy_dim], z_r, mean=True)
-                td, _, _, _, info = self.eval_env.step(action)
-                
-                self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
-                self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
-        
         if play_cfg.env.video_eval:
-            self.eval_env.stop_recording(f"{command_xyw}", step=250)
+            self.eval_env.stop_recording(f"{task}_{mode}", step=250)
         self.eval_env.train_task()
 
-        print(f"T:{self.time} | Task: {command_xyw}")
+        print(f"T:{self.time} | Task: {task}_{mode}")
 
 ########################################################################################################################
 

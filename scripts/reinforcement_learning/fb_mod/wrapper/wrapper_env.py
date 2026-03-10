@@ -158,9 +158,9 @@ class FB_VecEnvWrapper(VecEnv):
             pass
 
     ####################################################################################################################
-    def eval_task(self, command_xyw: list):
+    def eval_task(self, command_xyw: torch.Tensor):
         self.env.unwrapped.termination_type = "none"                                               # type: ignore
-        self.env.unwrapped._commands[:] = torch.tensor(command_xyw, device = self.device)          # type: ignore
+        self.env.unwrapped._commands[:] = command_xyw.to(device=self.device)                       # type: ignore
         self.env.unwrapped._is_eval_mode = True                                                    # type: ignore
 
     def train_task(self):
