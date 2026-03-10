@@ -198,7 +198,8 @@ class Go2NormEnv(DirectRLEnv):
                 self._robot.data.joint_pos - self._robot.data.default_joint_pos,
                 self._robot.data.joint_vel,
                 self._previous_actions,
-                self._feet_contact_force,
+                self._feet_contact_state,
+                # self._feet_contact_force, # !!!! Enable this will lead to inconsistency: same seed produce different results, 影响 critic seed 一致性
                 self._feet_height_z,
             ],
             dim=-1,
