@@ -313,10 +313,10 @@ class WORKSPACE:
                 self.eval('locomotion', 'random')
                 self.eval('orientation', 'list')
                 self.env.unwrapped.set_debug_vis(False)  # type: ignore
-                
-                # if hydra_cfg.wandb.use_wandb:
-                #     wandb.log(self.eval_metrics.get_tasks_metrics(), step = t)
-                # self.eval_metrics.clear()
+
+                if hydra_cfg.wandb.use_wandb:
+                    wandb.log(self.eval_metrics.get_tasks_metrics(), step = t)
+                self.eval_metrics.clear()
 
                 # # run 300 frames to prevent massive robots reset
                 # if hydra_cfg.env.video_train:
@@ -401,8 +401,14 @@ class WORKSPACE:
             action = self.agent.act(obs['policy'], z_r, mean=True)
             td, _, _, _, info = self.eval_env.step(action)
             
-            # self.eval_metrics.update_rew(f"{command_xyw}", td['reward_task'], info['rew_dict'])
-            # self.eval_metrics.update_reg(f"{command_xyw}", info['reg_dict'])
+            self.eval_metrics.update(
+                task,
+                mode,
+                cmd['log_index'],
+                td['reward_task'],
+                info['rew_dict'],
+                info['reg_dict']
+            )
         
         if hydra_cfg.env.video_eval:
             self.eval_env.stop_recording(f"{task}_{mode}", step=self.train_env.env.step_id)
