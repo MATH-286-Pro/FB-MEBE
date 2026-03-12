@@ -29,7 +29,7 @@ env:
   video_train_interval: 10000  # 30_000_000 / 20 (video numbers) / 50 (num_envs) 
   video_train_length:   250
   
-  video_eval: false
+  video_eval: true
   video_eval_interval: 250
   video_eval_length:   250
 
@@ -109,5 +109,5 @@ train:
   # eval settings
   eval: true
   eval_episode_length: 250
-  interval_eval: 20000
+  interval_eval: 10000
   num_eval_sample: 100_000
