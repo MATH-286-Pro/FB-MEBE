@@ -63,7 +63,7 @@ agent:
     clip_grad_norm: 1.0
     reg_coeff: 20.0
 
-    train_goal_ratio: 0.2
+    train_goal_ratio: 0.8
 
   model:
     archi:
