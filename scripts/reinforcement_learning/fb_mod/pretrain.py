@@ -311,6 +311,7 @@ class WORKSPACE:
                 self.env.unwrapped.set_debug_vis(True)  # type: ignore     
                 self.eval('locomotion', 'list')
                 self.eval('locomotion', 'random')
+                self.eval('orientation', 'list')
                 self.env.unwrapped.set_debug_vis(False)  # type: ignore
                 
                 # if hydra_cfg.wandb.use_wandb:

@@ -18,6 +18,13 @@ def _format_value(value: float) -> str:
     return text if "." in text else f"{text}.0"
 
 
+def _gravity_to_pitch_roll(gx: float, gy: float, gz: float) -> tuple[float, float]:
+    gravity = torch.tensor([gx, gy, gz], dtype=torch.float32)
+    pitch = torch.rad2deg(torch.asin(torch.clamp(-gravity[0], -1.0, 1.0))).item()
+    roll = torch.rad2deg(torch.atan2(gravity[1], -gravity[2])).item()
+    return pitch, roll
+
+
 class CMDSampler:
     
     def __init__(self, device: str = "cpu"):
@@ -36,6 +43,7 @@ class CMDSampler:
 
     def _build_log_index(
         self,
+        task: str,
         mode: str,
         num_sample: int,
         sample_keys: list[str],
@@ -48,10 +56,15 @@ class CMDSampler:
         if mode == "LIST":
             log_index: dict[str, list[int]] = defaultdict(list)
             for env_idx, row in enumerate(sampled_values.detach().cpu().tolist()):
-                name = "[" + ", ".join(
-                    f"{key}={_format_value(float(row[i]))}"
-                    for i, key in enumerate(sample_keys)
-                ) + "]"
+                match task:
+                    case "orientation" if sample_keys == ["gx", "gy", "gz"]:
+                        pitch, roll = _gravity_to_pitch_roll(float(row[0]), float(row[1]), float(row[2]))
+                        name = f"[pitch={_format_value(pitch)}, roll={_format_value(roll)}]"
+                    case _:
+                        name = "[" + ", ".join(
+                            f"{key}={_format_value(float(row[i]))}"
+                            for i, key in enumerate(sample_keys)
+                        ) + "]"
                 log_index[name].append(env_idx)
             return dict(log_index)
 
@@ -91,7 +104,7 @@ class CMDSampler:
 
         command: dict[str, tp.Any] = self._build_default_command(num_sample)
         command.update(command_partial)
-        command["log_index"] = self._build_log_index(mode, num_sample, sample_keys, sampled_values)
+        command["log_index"] = self._build_log_index(task, mode, num_sample, sample_keys, sampled_values)
 
         return command
 
