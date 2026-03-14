@@ -32,6 +32,9 @@ class FBAgent:
         self.setup_compile()
         self._model.to(self.cfg.model.device)
 
+        # Reverse Sampler API
+        self.estimator = ...
+
         self.t = 0
         self.update_actor_freq = 2
 
@@ -167,6 +170,8 @@ class FBAgent:
         }
 
         # OBS, NEXT_OBS these capitalized name means they are normalized
+
+        self.estimator.observe(obs['goal'])
 
         torch.compiler.cudagraph_mark_step_begin()
         z = self.sample_mixed_z(TRAIN_GOAL=NEXT_OBS).clone()
@@ -433,12 +438,20 @@ class FBAgent:
         )
         return preds_mean, preds_unc, preds_mean - pessimism_penalty * preds_unc
 
+    @torch.no_grad()
     def refresh_z(self, z: torch.Tensor | None, step_count: torch.Tensor) -> torch.Tensor:
         # get mask for environmets where we need to change z
         if z is not None:
             mask_reset_z = step_count % self.cfg.train.update_z_every_step == 0
-            if self.cfg.train.use_mix_rollout and not self.z_buffer.empty():
-                new_z = self.z_buffer.sample(z.shape[0], device=self.cfg.model.device)
+            num_envs = z.shape[0]
+            p_reverse = 0.8
+
+            if num_envs > 0 and self.estimator.buffer.size > num_envs * 10:
+                goal_exp = self.estimator.inverse_sample_from_buffer(num_envs)
+                z_exp = self._model.backward_map(goal_exp)
+                z_rnd = self._model.sample_z(num_envs, device=self.cfg.model.device)
+                mix_mask = torch.rand((num_envs, 1), device=self.cfg.model.device) < p_reverse
+                new_z = torch.where(mix_mask, z_exp, z_rnd)
             else:
                 new_z = self._model.sample_z(z.shape[0], device=self.cfg.model.device)
             z = torch.where(mask_reset_z, new_z, z.to(self.cfg.model.device))

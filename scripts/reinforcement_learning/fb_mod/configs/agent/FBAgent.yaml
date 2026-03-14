@@ -52,6 +52,10 @@ train:
   # critic
   reg_coeff: 0.01
 
+  # reverse sampling
+  eps:  1e-2
+  beta: 1.0
+
 model:
   device: ${env.device}
 

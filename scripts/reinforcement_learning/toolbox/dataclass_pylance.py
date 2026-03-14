@@ -51,6 +51,10 @@ class TRAIN_CFG:
     # critic
     critic_coef: float = 0.003
 
+    # Reverse Sampling
+    eps:  float = 1e-2
+    beta: float = 1.0
+
 @dataclasses.dataclass
 class MODEL_CFG:
     device: str = "cpu"
