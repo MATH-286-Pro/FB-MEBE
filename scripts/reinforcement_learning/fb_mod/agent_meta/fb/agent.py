@@ -118,7 +118,7 @@ class FBAgent:
             print(f"compiling with mode '{mode}'")
             self.update_fb = torch.compile(self.update_fb, mode=mode)  # use fullgraph=True to debug for graph breaks
             self.update_actor = torch.compile(self.update_actor, mode=mode)  # use fullgraph=True to debug for graph breaks
-            self.sample_mixed_z = torch.compile(self.sample_mixed_z, mode=mode, fullgraph=True)
+            # self.sample_mixed_z = torch.compile(self.sample_mixed_z, mode=mode, fullgraph=True)
 
             if self.cfg.model.archi.critic.enable:
                 self.update_critic = torch.compile(self.update_critic, mode=mode)
@@ -139,14 +139,19 @@ class FBAgent:
     @torch.no_grad()
     def sample_mixed_z(self, TRAIN_GOAL: dict[str, torch.Tensor] | None = None, *args, **kwargs):
         # samples a batch from the z distribution used to update the networks
-        z = self._model.sample_z(self.cfg.train.batch_size, device=self.device)
+        num_explore_sample = int(self.cfg.train.train_goal_ratio * self.cfg.train.batch_size)
+        num_random_sample = self.cfg.train.batch_size - num_explore_sample
 
-        if TRAIN_GOAL is not None:
-            perm = torch.randperm(self.cfg.train.batch_size, device=self.device)
-            z_B = self._model._backward_map(TRAIN_GOAL['goal'][perm])
-            z_B = self._model.project_z(z_B)
-            mask = torch.rand((self.cfg.train.batch_size, 1), device=self.device) < self.cfg.train.train_goal_ratio
-            z = torch.where(mask, z_B, z)
+        # reverse sample
+        goal_exp = self.estimator.inverse_sample_from_buffer(num_explore_sample)
+        z_exp = self._model.backward_map(goal_exp)
+
+        # random sample
+        z_random = self._model.sample_z(num_random_sample, device=self.device)
+
+        # mix
+        z = torch.cat([z_exp, z_random], dim=0)
+
         return z
 
     def update(self, replay_buffer, step: int) -> Dict[str, torch.Tensor]:

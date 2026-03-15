@@ -38,8 +38,8 @@ wandb:
   use_wandb: true
   entity:    math-286-pro-epfl
   project:   FB_Jiajun
-  name:      FB(E)_NF_Vxy_BETA1_Critic
-  group:     FB(E)_NF_Vxy_BETA1_Critic
+  name:      FB(M)_NF_Vxy_BETA1_Critic
+  group:     FB(M)_NF_Vxy_BETA1_Critic
   tags:
 
 ###################################################### User Define #######################################################
