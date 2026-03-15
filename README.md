@@ -1,4 +1,108 @@
-![Isaac Lab](docs/source/_static/isaaclab.jpg)
+# Guide
+
+## File Structure
+
+```
+scripts/
+└── reinforcement_learning/
+    └── fb_mod/
+        ├── agent_meta/
+        │   └── fb/
+        │       └── agent.py (code related to FB agent)
+        ├── configs/ (folder related to FB agent and training settings)
+        ├── density_estimator/ (folder related to normalizing flow)
+        └── pretrain.py (code of FB training)
+```
+
+## Configuration
+```yaml
+# We use hydra to configure all the parameters
+
+# this file stores all the FB agent hyperparameter settings
+scripts/reinforcement_learning/fb_mod/configs/agent/FBAgent.yaml
+
+# this file will inherit the "FBAgent.yaml" and override its hyperparameter
+scripts/reinforcement_learning/fb_mod/configs/Isaaclab_pretrain_config_base.yaml
+
+# In Go2 Tasks we use Isaaclab_pretrain_config_go2.yaml
+# It inherits the Isaaclab_pretrain_config_base.yaml and override its task type
+scripts/reinforcement_learning/fb_mod/configs/Isaaclab_pretrain_config_go2.yaml
+
+
+# Details of Isaaclab_pretrain_config_go2.yaml. 
+# These are the most frequently change parameters
+
+env: 
+ device:      simulate on which device
+ video_train: record pretrain or not
+ video_eval:  record evaluation or not 
+              (if you enable this you also have to enable video_train,
+               otherwise will report error)
+ num_envs:    number of parallel environment you will run
+ task:        select relevent tasks
+
+ # there are three types of task now (we commented two out)
+
+# 1. "Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-v0" 
+# has random friction and robot base, link mass, and use absolute joint control
+
+# 2. "Isaac-Flat-Unitree-Go2-Rnd-Full-FB-INC-v0" 
+# same as above but use incremental/delta control (can be viewed as joint velocity control). This is to expend the action space.
+
+# 3. "Isaac-Flat-Unitree-Go2-Rnd-Full-FB-ABS-KAIST-v0" 
+# absolute joint control, and added (sin(t), cos(t)) two more observation and use soft-barrier-function from KAIST (remember to set agent.model.archi.critic=True to use this task)
+
+wandb:
+  use_wandb: upload data to wandb
+  entity:    your wandb account entity
+  project:   desired target project
+  name:      desired target name
+  group:     desired target group
+
+agent:
+ compile: by setting to True will make training faster
+ train: 
+   lr_f: learning rate for forward network
+   lr_b: learning rate for backward network
+   lr_actor: learning rate for actor network
+ model:
+   archi: architecture for different networks
+     critic:
+       enable: if you want to enable critic or not
+```
+
+## Training
+```bash
+# 0. create virtual env (conda example)
+conda create -n env_isaaclab python=3.12
+conda activate env_isaaclab
+
+# 1. clone this repo and install isaaclab in virtual env
+./isaaclab.sh --install
+
+# 2. Monitor training using wandb
+# first run this command to log in to your wandb account
+wandb login
+# then go to "scripts/reinforcement_learning/fb_mod/configs/Isaaclab_pretrain_config_go2.yaml"
+# in wandb section change to your "entity" and "project"
+
+# 3. Run bash to train FB (you might encounter some python dependency issues)
+./bash/fb_pretrain.sh
+
+
+# Others
+./bash/fb_pretrain_multi.sh # For series of training
+./bash/play_xbox.sh         # run model in isaaclab controlled by joystick
+./euler/server.md           # check the procedure to run training on Euler
+
+```
+
+## Issues
+```bash
+```
+
+
+<!-- ![Isaac Lab](docs/source/_static/isaaclab.jpg)
 
 ---
 
@@ -97,4 +201,4 @@ Isaac Lab development initiated from the [Orbit](https://isaac-orbit.github.io/)
    pages={3740-3747},
    doi={10.1109/LRA.2023.3270034}
 }
-```
+``` -->
