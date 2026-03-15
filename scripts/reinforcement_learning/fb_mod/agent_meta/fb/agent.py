@@ -248,16 +248,18 @@ class FBAgent:
         diff = Ms - discount * target_M  # num_parallel x batch x batch
         fb_offdiag = 0.5 * (diff * self.off_diag).pow(2).sum() / self.off_diag_sum
         fb_diag = -torch.diagonal(Ms, dim1=1, dim2=2).mean() * Ms.shape[0]
-        fb_loss = fb_offdiag + fb_diag
+        fb_loss_base = fb_offdiag + fb_diag
 
         # compute orthonormality loss for backward embedding
         Cov = torch.matmul(B, B.T)
         orth_loss_diag = -Cov.diag().mean()
         orth_loss_offdiag = 0.5 * (Cov * self.off_diag).pow(2).sum() / self.off_diag_sum
         orth_loss = orth_loss_offdiag + orth_loss_diag
-        fb_loss += self.cfg.train.ortho_coef * orth_loss
+        fb_ortho_term = self.cfg.train.ortho_coef * orth_loss
+        fb_loss = fb_loss_base + fb_ortho_term
 
         q_loss = torch.zeros(1, device=z.device, dtype=z.dtype)
+        fb_q_term = torch.zeros(1, device=z.device, dtype=z.dtype)
         if q_loss_coef is not None:
             with torch.no_grad():
                 next_Qs = (target_Fs * z).sum(dim=-1)  # num_parallel x batch
@@ -269,7 +271,21 @@ class FBAgent:
                 expanded_targets = target_Q.expand(Fs.shape[0], -1)
             Qs = (Fs * z).sum(dim=-1)  # num_parallel x batch
             q_loss = 0.5 * Fs.shape[0] * F.mse_loss(Qs, expanded_targets)
-            fb_loss += q_loss_coef * q_loss
+            fb_q_term = q_loss_coef * q_loss
+            fb_loss += fb_q_term
+
+        fb_diag_grad_f_mean, fb_diag_grad_f_max, fb_diag_grad_b_mean, fb_diag_grad_b_max = self._component_grad_stats_fb(
+            fb_diag
+        )
+        fb_offdiag_grad_f_mean, fb_offdiag_grad_f_max, fb_offdiag_grad_b_mean, fb_offdiag_grad_b_max = self._component_grad_stats_fb(
+            fb_offdiag
+        )
+        fb_ortho_grad_f_mean, fb_ortho_grad_f_max, fb_ortho_grad_b_mean, fb_ortho_grad_b_max = self._component_grad_stats_fb(
+            fb_ortho_term
+        )
+        fb_q_grad_f_mean, fb_q_grad_f_max, fb_q_grad_b_mean, fb_q_grad_b_max = self._component_grad_stats_fb(
+            fb_q_term
+        )
 
         # optimize FB
         self.forward_optimizer.zero_grad(set_to_none=True)
@@ -313,6 +329,22 @@ class FBAgent:
                 "orth_loss": orth_loss,
                 "orth_loss_diag": orth_loss_diag,
                 "orth_loss_offdiag": orth_loss_offdiag,
+                "fb_grad_diag_forward_abs_mean": fb_diag_grad_f_mean,
+                # "fb_grad_diag_forward_abs_max": fb_diag_grad_f_max,
+                "fb_grad_diag_backward_abs_mean": fb_diag_grad_b_mean,
+                # "fb_grad_diag_backward_abs_max": fb_diag_grad_b_max,
+                "fb_grad_offdiag_forward_abs_mean": fb_offdiag_grad_f_mean,
+                # "fb_grad_offdiag_forward_abs_max": fb_offdiag_grad_f_max,
+                "fb_grad_offdiag_backward_abs_mean": fb_offdiag_grad_b_mean,
+                # "fb_grad_offdiag_backward_abs_max": fb_offdiag_grad_b_max,
+                "fb_grad_ortho_forward_abs_mean": fb_ortho_grad_f_mean,
+                # "fb_grad_ortho_forward_abs_max": fb_ortho_grad_f_max,
+                "fb_grad_ortho_backward_abs_mean": fb_ortho_grad_b_mean,
+                # "fb_grad_ortho_backward_abs_max": fb_ortho_grad_b_max,
+                "fb_grad_q_forward_abs_mean": fb_q_grad_f_mean,
+                # "fb_grad_q_forward_abs_max": fb_q_grad_f_max,
+                "fb_grad_q_backward_abs_mean": fb_q_grad_b_mean,
+                # "fb_grad_q_backward_abs_max": fb_q_grad_b_max,
                 "forward_grad_abs_mean": forward_grad_abs_mean,
                 "forward_grad_abs_max": forward_grad_abs_max,
                 "backward_grad_abs_mean": backward_grad_abs_mean,
@@ -340,13 +372,27 @@ class FBAgent:
         _, _, Q_fb = self.get_targets_uncertainty(Qs_fb, self.cfg.train.actor_pessimism_penalty)  # batch
         actor_loss = -Q_fb.mean()
         metrics["actor_loss_fb"] = actor_loss.detach().clone()
+        actor_grad_fb_abs_mean, actor_grad_fb_abs_max = self._component_grad_stats(actor_loss, tuple(self._model._actor.parameters()))
+        metrics["actor_grad_fb_abs_mean"] = actor_grad_fb_abs_mean
+        metrics["actor_grad_fb_abs_max"] = actor_grad_fb_abs_max
 
         if self.cfg.model.archi.critic.enable:
             Qs_critic = self._model._critic(OBS['critic'], action)  # with grad
             _, _, Q_critic = self.get_targets_uncertainty(Qs_critic, self.cfg.train.critic_pessimism_penalty)
             
-            actor_loss -= Q_critic.mean() * self.cfg.train.reg_coeff
-            metrics["actor_loss_critic"] = -(Q_critic.mean() * self.cfg.train.reg_coeff).detach().clone()
+            actor_critic_term = -(Q_critic.mean() * self.cfg.train.reg_coeff)
+            actor_loss += actor_critic_term
+            metrics["actor_loss_critic"] = actor_critic_term.detach().clone()
+
+            actor_grad_critic_abs_mean, actor_grad_critic_abs_max = self._component_grad_stats(
+                actor_critic_term,
+                tuple(self._model._actor.parameters()),
+            )
+            metrics["actor_grad_critic_abs_mean"] = actor_grad_critic_abs_mean
+            metrics["actor_grad_critic_abs_max"] = actor_grad_critic_abs_max
+        else:
+            metrics["actor_grad_critic_abs_mean"] = torch.zeros(1, device=OBS['policy'].device, dtype=OBS['policy'].dtype)
+            metrics["actor_grad_critic_abs_max"] = torch.zeros(1, device=OBS['policy'].device, dtype=OBS['policy'].dtype)
 
         # optimize actor
         self.actor_optimizer.zero_grad(set_to_none=True)
@@ -357,6 +403,49 @@ class FBAgent:
 
         metrics["actor_loss"] = actor_loss.detach().clone()
         return metrics
+
+    def _grad_abs_stats(self, grads: Tuple[torch.Tensor | None, ...], ref: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        vals = [g.abs().mean() for g in grads if g is not None]
+        if len(vals) == 0:
+            zero = torch.zeros(1, device=ref.device, dtype=ref.dtype)
+            return zero, zero
+        grad_abs_mean = torch.stack(vals).mean().detach()
+        grad_abs_max = torch.stack(vals).max().detach()
+        return grad_abs_mean, grad_abs_max
+
+    def _component_grad_stats(
+        self,
+        loss_term: torch.Tensor,
+        params: Tuple[torch.Tensor, ...],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if (not torch.is_tensor(loss_term)) or (not loss_term.requires_grad):
+            zero = torch.zeros(1, device=self.device)
+            return zero, zero
+        grads = torch.autograd.grad(loss_term, params, retain_graph=True, allow_unused=True)
+        return self._grad_abs_stats(grads, loss_term)
+
+    def _component_grad_stats_fb(
+        self,
+        loss_term: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if (not torch.is_tensor(loss_term)) or (not loss_term.requires_grad):
+            zero = torch.zeros(1, device=self.device)
+            return zero, zero, zero, zero
+        f_grads = torch.autograd.grad(
+            loss_term,
+            self._forward_map_paramlist,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        b_grads = torch.autograd.grad(
+            loss_term,
+            self._backward_map_paramlist,
+            retain_graph=True,
+            allow_unused=True,
+        )
+        f_mean, f_max = self._grad_abs_stats(f_grads, loss_term)
+        b_mean, b_max = self._grad_abs_stats(b_grads, loss_term)
+        return f_mean, f_max, b_mean, b_max
 
     def update_critic(
             self,
